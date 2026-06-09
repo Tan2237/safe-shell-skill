@@ -83,7 +83,7 @@ def quote_powershell(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
-def quote_cmd(text: str) -> str:
+def quote_cmd(text: str) -> tuple[str, list[dict[str, str]] | None]:
     """Quote for CMD using CommandLineToArgvW rules.
 
     This implements the MS C runtime convention (same as subprocess.list2cmdline):
@@ -93,7 +93,14 @@ def quote_cmd(text: str) -> str:
 
     Unlike subprocess.list2cmdline, this always returns a quoted string
     so agents can safely concatenate arguments.
+
+    Note: CMD double-quoting does NOT prevent %VAR% expansion inside
+    for loops or call contexts. This is an inherent CMD limitation.
     """
+    warnings = None
+    if "%" in text:
+        warnings = [{"code": "CMD_PERCENT_EXPANSION", "message": "CMD may expand %VAR% patterns inside for/call contexts even within double quotes"}]
+
     # Build the quoted string
     result = ['"']
 
@@ -118,7 +125,7 @@ def quote_cmd(text: str) -> str:
     result.append('\\' * (backslashes * 2))
     result.append('"')
 
-    return ''.join(result)
+    return ''.join(result), warnings
 
 
 def quote_for_shell(text: str, shell: str) -> tuple[str, list[dict[str, str]] | None]:
@@ -128,7 +135,7 @@ def quote_for_shell(text: str, shell: str) -> tuple[str, list[dict[str, str]] | 
     elif shell == "powershell":
         return quote_powershell(text), None
     elif shell == "cmd":
-        return quote_cmd(text), None
+        return quote_cmd(text)
     else:
         raise SafeShellError("UNSUPPORTED_SHELL", f"shell '{shell}' is not supported")
 

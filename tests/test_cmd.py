@@ -189,6 +189,47 @@ class TestCmdQuoting(unittest.TestCase):
         quoted = quote(text)
         assert quoted == '"foo>bar"'
 
+    def test_percent_warning(self):
+        """Arguments containing % get CMD_PERCENT_EXPANSION warning."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+            json.dump({"shell": "cmd", "text": "foo%bar%"}, f, ensure_ascii=False)
+            request_file = f.name
+
+        try:
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), f"@{request_file}"],
+                capture_output=True,
+                env=env,
+            )
+            response = json.loads(result.stdout.decode("utf-8"))
+            assert response["ok"] is True
+            assert "warnings" in response
+            assert response["warnings"][0]["code"] == "CMD_PERCENT_EXPANSION"
+        finally:
+            Path(request_file).unlink(missing_ok=True)
+
+    def test_no_percent_no_warning(self):
+        """Arguments without % produce no warning."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+            json.dump({"shell": "cmd", "text": "foobar"}, f, ensure_ascii=False)
+            request_file = f.name
+
+        try:
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), f"@{request_file}"],
+                capture_output=True,
+                env=env,
+            )
+            response = json.loads(result.stdout.decode("utf-8"))
+            assert response["ok"] is True
+            assert "warnings" not in response
+        finally:
+            Path(request_file).unlink(missing_ok=True)
+
 
 class TestCmdEdgeCases(unittest.TestCase):
     """Edge cases for CMD quoting."""

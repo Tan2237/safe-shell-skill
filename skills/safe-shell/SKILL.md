@@ -116,6 +116,24 @@ Failure:
 > Only detects `/` and `//` prefixes. Does not guarantee detecting all cases.
 > No warning ≠ safe.
 
+```json
+{
+  "warnings": [
+    {
+      "code": "CMD_PERCENT_EXPANSION",
+      "message": "CMD may expand %VAR% patterns inside for/call contexts even within double quotes"
+    }
+  ]
+}
+```
+
+> **CMD percent warning.**
+>
+> CMD double-quoting does NOT prevent `%VAR%` expansion inside `for` loops
+> or `call` contexts. If the argument contains `%`, the Agent should be aware
+> that environment variable expansion may occur. This is an inherent CMD
+> limitation with no reliable workaround.
+
 ## CMD Implementation
 
 CMD quoting implements the MS C runtime `CommandLineToArgvW` convention,
