@@ -118,8 +118,18 @@ Failure:
 
 ## CMD Implementation
 
-CMD quoting uses `subprocess.list2cmdline()` from Python standard library.
-This implements the MS C runtime `CommandLineToArgvW` convention.
+CMD quoting implements the MS C runtime `CommandLineToArgvW` convention,
+following the same rules as Python's `subprocess.list2cmdline()`.
+Unlike `list2cmdline`, the output is always double-quoted so agents can
+safely concatenate arguments.
+
+> **CMD newline limitation.**
+>
+> While `CommandLineToArgvW` correctly preserves newlines within double-quoted
+> arguments, `cmd.exe` itself may interpret literal newlines as command
+> separators when the quoted argument appears in a batch script or is passed
+> through multiple layers of command processing. Agents should be cautious
+> when quoting arguments containing newlines for CMD.
 
 ## Limits
 
