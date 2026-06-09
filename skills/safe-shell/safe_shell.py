@@ -27,6 +27,7 @@ import sys
 from typing import Any
 
 MAX_INPUT_SIZE = 1024 * 1024  # 1 MiB
+MAX_FILE_SIZE = 4 * 1024 * 1024  # 4 MiB (base64 of 1 MiB ≈ 1.37 MiB; leaves headroom for JSON overhead)
 
 SUPPORTED_SHELLS = frozenset(["bash", "zsh", "fish", "powershell", "cmd", "msys2"])
 
@@ -242,7 +243,11 @@ def main(args: list[str] | None = None) -> int:
     # Read request file
     try:
         with open(request_file, "r", encoding="utf-8") as f:
-            raw_content = f.read()
+            raw_content = f.read(MAX_FILE_SIZE + 1)
+            if len(raw_content) > MAX_FILE_SIZE:
+                response = fail("INPUT_TOO_LARGE", f"request file exceeds maximum {MAX_FILE_SIZE} bytes")
+                print(json.dumps(response, ensure_ascii=False))
+                return 1
     except FileNotFoundError:
         response = fail("INVALID_JSON", f"file not found: {request_file}")
         print(json.dumps(response, ensure_ascii=False))
