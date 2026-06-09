@@ -91,6 +91,7 @@ Failure:
 |--------------|---------|
 | `INVALID_JSON` | JSON parse failed |
 | `MISSING_REQUIRED_FIELD` | Required field missing |
+| `INVALID_FIELD_TYPE` | Field type error (e.g. text is number) |
 | `UNSUPPORTED_SHELL` | shell not in enum |
 | `UNSUPPORTED_ENCODING` | encoding not supported |
 | `INVALID_ENCODING_DATA` | base64 decode failed |
@@ -110,12 +111,15 @@ Failure:
 }
 ```
 
-## CMD Disclaimer
-
-> **CMD support is best-effort.**
+> **MSYS2 path warning is heuristic.**
 >
-> Windows programs are free to implement their own argument parsing rules.
-> `CommandLineToArgvW` is a convention, not a guarantee.
+> Only detects `/` and `//` prefixes. Does not guarantee detecting all cases.
+> No warning ≠ safe.
+
+## CMD Implementation
+
+CMD quoting uses `subprocess.list2cmdline()` from Python standard library.
+This implements the MS C runtime `CommandLineToArgvW` convention.
 
 ## Limits
 

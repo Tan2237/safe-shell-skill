@@ -84,43 +84,41 @@ def quote_powershell(text: str) -> str:
 
 
 def quote_cmd(text: str) -> str:
-    """Quote for CMD using double-quote escaping.
+    """Quote for CMD using CommandLineToArgvW rules.
 
-    foo"bar -> "foo\"bar"
-    foo\\\"bar -> "foo\\\\\\\"bar"
+    This implements the MS C runtime convention (same as subprocess.list2cmdline):
+    - Backslashes before quotes: 2n backslashes + quote -> n backslashes + escaped quote
+    - Backslashes before quotes: 2n+1 backslashes + quote -> n backslashes + literal quote
+    - Trailing backslashes are doubled before the closing quote
+
+    Unlike subprocess.list2cmdline, this always returns a quoted string
+    so agents can safely concatenate arguments.
     """
-    # First escape backslashes before quotes: \\" -> \\\\
-    # Then escape quotes: " -> \"
-    result = []
-    i = 0
-    while i < len(text):
-        if text[i] == '"':
-            # Count preceding backslashes
-            backslashes = 0
-            j = i - 1
-            while j >= 0 and text[j] == '\\':
-                backslashes += 1
-                j -= 1
-            # Double the backslashes before the quote
-            result.append('\\' * backslashes)
-            result.append('\\"')
-        elif text[i] == '\\':
-            # Just collect backslashes, they'll be handled at quote or end
-            result.append('\\')
-        else:
-            result.append(text[i])
-        i += 1
+    # Build the quoted string
+    result = ['"']
 
-    # Escape backslashes at the end (before the closing quote)
-    if result and result[-1] == '\\':
-        # Find trailing backslashes
-        backslashes = 0
-        while result and result[-1] == '\\':
-            result.pop()
+    # Count backslashes and process
+    backslashes = 0
+    for c in text:
+        if c == '\\':
             backslashes += 1
-        result.append('\\' * (backslashes * 2))
+        elif c == '"':
+            # Double all backslashes before the quote, then add escaped quote
+            result.append('\\' * (backslashes * 2))
+            result.append('\\"')
+            backslashes = 0
+        else:
+            # Output any pending backslashes
+            if backslashes:
+                result.append('\\' * backslashes)
+                backslashes = 0
+            result.append(c)
 
-    return '"' + ''.join(result) + '"'
+    # Handle trailing backslashes (double them before closing quote)
+    result.append('\\' * (backslashes * 2))
+    result.append('"')
+
+    return ''.join(result)
 
 
 def quote_for_shell(text: str, shell: str) -> tuple[str, list[dict[str, str]] | None]:
@@ -142,7 +140,7 @@ def decode_text(text: str, encoding: str | None) -> str:
 
     if encoding == "base64":
         try:
-            decoded = base64.b64decode(text)
+            decoded = base64.b64decode(text, validate=True)
             return decoded.decode("utf-8")
         except Exception as e:
             raise SafeShellError("INVALID_ENCODING_DATA", f"base64 decode failed: {e}")
@@ -173,7 +171,7 @@ def validate_request(data: dict[str, Any]) -> tuple[str, str]:
     # 3. text type check
     text = data.get("text")
     if not isinstance(text, str):
-        raise SafeShellError("INVALID_JSON", f"text must be string, got: {type(text).__name__}")
+        raise SafeShellError("INVALID_FIELD_TYPE", f"text must be string, got: {type(text).__name__}")
 
     # 4. encoding data decode
     text = decode_text(text, encoding)
@@ -188,7 +186,7 @@ def validate_request(data: dict[str, Any]) -> tuple[str, str]:
     # 6. shell validation
     shell = data.get("shell")
     if not isinstance(shell, str):
-        raise SafeShellError("INVALID_JSON", f"shell must be string, got: {type(shell).__name__}")
+        raise SafeShellError("INVALID_FIELD_TYPE", f"shell must be string, got: {type(shell).__name__}")
 
     if shell not in SUPPORTED_SHELLS:
         raise SafeShellError("UNSUPPORTED_SHELL", f"shell '{shell}' is not supported")

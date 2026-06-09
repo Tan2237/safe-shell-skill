@@ -142,6 +142,18 @@ class TestProtocolContract(unittest.TestCase):
         result = run_safe_shell({"shell": "bash", "text": "foo\x00bar"})
         assert result["failureClass"] == "UNQUOTABLE_CHARACTER"
 
+    def test_invalid_field_type_text(self):
+        """INVALID_FIELD_TYPE when text is not string."""
+        result = run_safe_shell({"shell": "bash", "text": 123})
+        assert result["failureClass"] == "INVALID_FIELD_TYPE"
+        assert "text" in result["message"]
+
+    def test_invalid_field_type_shell(self):
+        """INVALID_FIELD_TYPE when shell is not string."""
+        result = run_safe_shell({"shell": None, "text": "foo"})
+        assert result["failureClass"] == "INVALID_FIELD_TYPE"
+        assert "shell" in result["message"]
+
     def test_all_supported_shells(self):
         """All supported shells work."""
         for shell in ["bash", "zsh", "fish", "powershell", "cmd", "msys2"]:
