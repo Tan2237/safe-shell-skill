@@ -2,6 +2,7 @@
 
 import json
 import os
+import platform
 import subprocess
 import sys
 import tempfile
@@ -87,6 +88,7 @@ class TestPowerShellQuoting(unittest.TestCase):
         """Multiple single quotes."""
         assert quote("a'b'c") == "'a''b''c'"
 
+    @unittest.skipUnless(platform.system() == "Windows", "PowerShell only on Windows")
     def test_roundtrip_simple(self):
         """Roundtrip: quote then unquote returns original."""
         text = "Hello, World!"
@@ -102,6 +104,7 @@ class TestPowerShellQuoting(unittest.TestCase):
             # PowerShell adds trailing newline
             assert result.stdout.strip() == text
 
+    @unittest.skipUnless(platform.system() == "Windows", "PowerShell only on Windows")
     def test_roundtrip_with_single_quote(self):
         """Roundtrip: string with single quote."""
         text = "foo'bar"
@@ -129,6 +132,7 @@ class TestPowerShellQuoting(unittest.TestCase):
             # Just verify the quoting is correct
             assert quoted == "'日本語 テスト'"
 
+    @unittest.skipUnless(platform.system() == "Windows", "PowerShell only on Windows")
     def test_roundtrip_multiline(self):
         """Roundtrip: Multiline."""
         text = "line1\nline2"
@@ -143,6 +147,7 @@ class TestPowerShellQuoting(unittest.TestCase):
             # PowerShell may normalize line endings
             assert result.stdout.strip().replace("\r\n", "\n") == text
 
+    @unittest.skipUnless(platform.system() == "Windows", "PowerShell only on Windows")
     def test_variable_not_expanded(self):
         """$VAR is not expanded in single quotes."""
         quoted = quote("$HOME")
@@ -156,6 +161,7 @@ class TestPowerShellQuoting(unittest.TestCase):
         if result.returncode == 0:
             assert result.stdout.strip() == "$HOME"
 
+    @unittest.skipUnless(platform.system() == "Windows", "PowerShell only on Windows")
     def test_backtick_not_escaped(self):
         """Backtick is literal in single quotes."""
         quoted = quote("foo`bar")

@@ -2,6 +2,7 @@
 
 import json
 import os
+import platform
 import subprocess
 import sys
 import tempfile
@@ -39,7 +40,11 @@ def unquote_cmd(quoted: str) -> str:
 
     This is the authoritative test: if CommandLineToArgvW parses our
     quoted string back to the original, the quoting is correct.
+    Only works on Windows.
     """
+    if platform.system() != "Windows":
+        raise Exception("unquote_cmd only works on Windows")
+
     import ctypes
     from ctypes import wintypes
 
@@ -134,6 +139,7 @@ class TestCmdQuoting(unittest.TestCase):
         # \\" -> \\\\"
         assert quote('foo\\\\"bar') == '"foo\\\\\\\\\\"bar"'
 
+    @unittest.skipUnless(platform.system() == "Windows", "CommandLineToArgvW only on Windows")
     def test_roundtrip_simple(self):
         """Roundtrip: simple text."""
         text = "Hello World"
@@ -141,6 +147,7 @@ class TestCmdQuoting(unittest.TestCase):
         result = unquote_cmd(quoted)
         assert result == text
 
+    @unittest.skipUnless(platform.system() == "Windows", "CommandLineToArgvW only on Windows")
     def test_roundtrip_with_quote(self):
         """Roundtrip: text with double quote."""
         text = 'foo"bar'
@@ -148,6 +155,7 @@ class TestCmdQuoting(unittest.TestCase):
         result = unquote_cmd(quoted)
         assert result == text
 
+    @unittest.skipUnless(platform.system() == "Windows", "CommandLineToArgvW only on Windows")
     def test_roundtrip_with_backslash(self):
         """Roundtrip: text with backslash."""
         text = "foo\\bar"
@@ -155,6 +163,7 @@ class TestCmdQuoting(unittest.TestCase):
         result = unquote_cmd(quoted)
         assert result == text
 
+    @unittest.skipUnless(platform.system() == "Windows", "CommandLineToArgvW only on Windows")
     def test_roundtrip_complex(self):
         """Roundtrip: complex string."""
         text = 'foo\\bar"baz'
@@ -193,6 +202,7 @@ class TestCmdEdgeCases(unittest.TestCase):
         # \\\ -> \\\\\\
         assert quote("test\\\\") == '"test\\\\\\\\"'
 
+    @unittest.skipUnless(platform.system() == "Windows", "CommandLineToArgvW only on Windows")
     def test_backslash_quote_backslash(self):
         """Backslash-quote-backslash pattern."""
         text = '\\"\\'
@@ -201,6 +211,7 @@ class TestCmdEdgeCases(unittest.TestCase):
         result = unquote_cmd(quoted)
         assert result == text
 
+    @unittest.skipUnless(platform.system() == "Windows", "CommandLineToArgvW only on Windows")
     def test_unicode_in_cmd(self):
         """Unicode text works in CMD."""
         text = "日本語"
