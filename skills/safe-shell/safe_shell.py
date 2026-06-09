@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""safe-shell: A JSON-RPC style argument quoting service for AI agents.
+
+Usage: safe-shell @request.json
+
+Request format (JSON):
+{
+    "shell": "bash",
+    "text": "foo'bar",
+    "encoding": "base64"  // optional
+}
+
+Response format (JSON):
+{
+    "ok": true,
+    "quoted": "'foo'\\''bar'",
+    "shell": "bash"
+}
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import sys
+from typing import Any
+
+MAX_INPUT_SIZE = 1024 * 1024  # 1 MiB
+
+SUPPORTED_SHELLS = frozenset(["bash", "zsh", "fish", "powershell", "cmd", "msys2"])
+
+
+class SafeShellError(Exception):
+    """Base exception for safe-shell errors."""
+
+    def __init__(self, failure_class: str, message: str) -> None:
+        self.failure_class = failure_class
+        self.message = message
+        super().__init__(message)
+
+
+def fail(failure_class: str, message: str) -> dict[str, Any]:
+    """Create a failure response."""
+    return {
+        "ok": False,
+        "failureClass": failure_class,
+        "message": message,
+    }
+
+
+def success(quoted: str, shell: str, warnings: list[dict[str, str]] | None = None) -> dict[str, Any]:
+    """Create a success response."""
+    result = {
+        "ok": True,
+        "quoted": quoted,
+        "shell": shell,
+    }
+    if warnings:
+        result["warnings"] = warnings
+    return result
+
+
+def quote_bash_zsh_fish_msys2(text: str, shell: str) -> tuple[str, list[dict[str, str]] | None]:
+    """Quote for bash/zsh/fish/msys2 using single-quote escaping.
+
+    'foo'bar' -> 'foo'\\''bar'
+    """
+    warnings = None
+    if shell == "msys2" and (text.startswith("/") or text.startswith("//")):
+        warnings = [{"code": "MSYS2_PATH_CONVERSION", "message": "MSYS2 may convert paths starting with /"}]
+
+    # Replace ' with '\'' and wrap in single quotes
+    quoted = "'" + text.replace("'", "'\\''") + "'"
+    return quoted, warnings
+
+
+def quote_powershell(text: str) -> str:
+    """Quote for PowerShell using single-quote escaping.
+
+    foo'bar -> 'foo''bar'
+    """
+    # Escape ' by doubling it
+    return "'" + text.replace("'", "''") + "'"
+
+
+def quote_cmd(text: str) -> str:
+    """Quote for CMD using double-quote escaping.
+
+    foo"bar -> "foo\"bar"
+    foo\\\"bar -> "foo\\\\\\\"bar"
+    """
+    # First escape backslashes before quotes: \\" -> \\\\
+    # Then escape quotes: " -> \"
+    result = []
+    i = 0
+    while i < len(text):
+        if text[i] == '"':
+            # Count preceding backslashes
+            backslashes = 0
+            j = i - 1
+            while j >= 0 and text[j] == '\\':
+                backslashes += 1
+                j -= 1
+            # Double the backslashes before the quote
+            result.append('\\' * backslashes)
+            result.append('\\"')
+        elif text[i] == '\\':
+            # Just collect backslashes, they'll be handled at quote or end
+            result.append('\\')
+        else:
+            result.append(text[i])
+        i += 1
+
+    # Escape backslashes at the end (before the closing quote)
+    if result and result[-1] == '\\':
+        # Find trailing backslashes
+        backslashes = 0
+        while result and result[-1] == '\\':
+            result.pop()
+            backslashes += 1
+        result.append('\\' * (backslashes * 2))
+
+    return '"' + ''.join(result) + '"'
+
+
+def quote_for_shell(text: str, shell: str) -> tuple[str, list[dict[str, str]] | None]:
+    """Quote text for the specified shell."""
+    if shell in ("bash", "zsh", "fish", "msys2"):
+        return quote_bash_zsh_fish_msys2(text, shell)
+    elif shell == "powershell":
+        return quote_powershell(text), None
+    elif shell == "cmd":
+        return quote_cmd(text), None
+    else:
+        raise SafeShellError("UNSUPPORTED_SHELL", f"shell '{shell}' is not supported")
+
+
+def decode_text(text: str, encoding: str | None) -> str:
+    """Decode text if encoding is specified."""
+    if encoding is None or encoding == "":
+        return text
+
+    if encoding == "base64":
+        try:
+            decoded = base64.b64decode(text)
+            return decoded.decode("utf-8")
+        except Exception as e:
+            raise SafeShellError("INVALID_ENCODING_DATA", f"base64 decode failed: {e}")
+    else:
+        raise SafeShellError("UNSUPPORTED_ENCODING", f"encoding '{encoding}' is not supported")
+
+
+def validate_request(data: dict[str, Any]) -> tuple[str, str]:
+    """Validate request and return (shell, text).
+
+    Validation order:
+    1. Required fields
+    2. encoding
+    3. encoding data
+    4. input size (decoded)
+    5. shell
+    """
+    # 1. Required fields
+    for field in ["shell", "text"]:
+        if field not in data:
+            raise SafeShellError("MISSING_REQUIRED_FIELD", f"missing required field: {field}")
+
+    # 2. encoding (optional)
+    encoding = data.get("encoding")
+    if encoding is not None and encoding != "" and encoding != "base64":
+        raise SafeShellError("UNSUPPORTED_ENCODING", f"encoding '{encoding}' is not supported")
+
+    # 3. text type check
+    text = data.get("text")
+    if not isinstance(text, str):
+        raise SafeShellError("INVALID_JSON", f"text must be string, got: {type(text).__name__}")
+
+    # 4. encoding data decode
+    text = decode_text(text, encoding)
+
+    # 5. input size check (on decoded text)
+    if len(text) > MAX_INPUT_SIZE:
+        raise SafeShellError(
+            "INPUT_TOO_LARGE",
+            f"input size {len(text)} exceeds maximum {MAX_INPUT_SIZE} bytes"
+        )
+
+    # 6. shell validation
+    shell = data.get("shell")
+    if not isinstance(shell, str):
+        raise SafeShellError("INVALID_JSON", f"shell must be string, got: {type(shell).__name__}")
+
+    if shell not in SUPPORTED_SHELLS:
+        raise SafeShellError("UNSUPPORTED_SHELL", f"shell '{shell}' is not supported")
+
+    # 7. Check for NUL character
+    if "\x00" in text:
+        raise SafeShellError(
+            "UNQUOTABLE_CHARACTER",
+            "text contains NUL character (\\x00) which cannot be safely quoted"
+        )
+
+    return shell, text
+
+
+def process_request(request_data: dict[str, Any]) -> dict[str, Any]:
+    """Process a request and return the response."""
+    try:
+        shell, text = validate_request(request_data)
+        quoted, warnings = quote_for_shell(text, shell)
+        return success(quoted, shell, warnings)
+    except SafeShellError as e:
+        return fail(e.failure_class, e.message)
+
+
+def main(args: list[str] | None = None) -> int:
+    """Main entry point."""
+    if args is None:
+        args = sys.argv[1:]
+
+    if not args:
+        print("Usage: safe-shell @request.json", file=sys.stderr)
+        return 1
+
+    # Handle @file syntax
+    request_file = None
+    for arg in args:
+        if arg.startswith("@"):
+            request_file = arg[1:]
+            break
+
+    if request_file is None:
+        print("Usage: safe-shell @request.json", file=sys.stderr)
+        return 1
+
+    # Read request file
+    try:
+        with open(request_file, "r", encoding="utf-8") as f:
+            raw_content = f.read()
+    except FileNotFoundError:
+        response = fail("INVALID_JSON", f"file not found: {request_file}")
+        print(json.dumps(response, ensure_ascii=False))
+        return 1
+    except OSError as e:
+        response = fail("INVALID_JSON", f"cannot read file: {e}")
+        print(json.dumps(response, ensure_ascii=False))
+        return 1
+
+    # Parse JSON
+    try:
+        request_data = json.loads(raw_content)
+    except json.JSONDecodeError as e:
+        response = fail("INVALID_JSON", str(e))
+        print(json.dumps(response, ensure_ascii=False))
+        return 1
+
+    # Validate that we got a dict
+    if not isinstance(request_data, dict):
+        response = fail("INVALID_JSON", "request must be a JSON object")
+        print(json.dumps(response, ensure_ascii=False))
+        return 1
+
+    # Process request
+    response = process_request(request_data)
+    print(json.dumps(response, ensure_ascii=False))
+
+    return 0 if response["ok"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
