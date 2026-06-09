@@ -21,6 +21,7 @@ Response format (JSON):
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import sys
 from typing import Any
@@ -149,7 +150,7 @@ def decode_text(text: str, encoding: str | None) -> str:
         try:
             decoded = base64.b64decode(text, validate=True)
             return decoded.decode("utf-8")
-        except Exception as e:
+        except (binascii.Error, UnicodeDecodeError) as e:
             raise SafeShellError("INVALID_ENCODING_DATA", f"base64 decode failed: {e}")
     else:
         raise SafeShellError("UNSUPPORTED_ENCODING", f"encoding '{encoding}' is not supported")
