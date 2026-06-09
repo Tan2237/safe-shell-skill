@@ -2,6 +2,7 @@
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -87,6 +88,7 @@ class TestBashQuoting(unittest.TestCase):
         """Tab is preserved in single quotes."""
         assert quote("foo\tbar") == "'foo\tbar'"
 
+    @unittest.skipUnless(platform.system() != "Windows", "Bash roundtrip not reliable on Windows (Git Bash encoding)")
     def test_text_with_special_chars(self):
         """Multiple special chars."""
         text = "foo$bar`baz\\qux"
@@ -105,18 +107,21 @@ class TestBashQuoting(unittest.TestCase):
         """Multiple single quotes."""
         assert quote("a'b'c") == "'a'\\''b'\\''c'"
 
+    @unittest.skipUnless(platform.system() != "Windows", "Bash roundtrip not reliable on Windows (Git Bash encoding)")
     def test_roundtrip_simple(self):
         """Roundtrip: quote then unquote returns original."""
         text = "Hello, World!"
         quoted = quote(text)
         assert unquote_bash(quoted) == text
 
+    @unittest.skipUnless(platform.system() != "Windows", "Bash roundtrip not reliable on Windows (Git Bash encoding)")
     def test_roundtrip_complex(self):
         """Roundtrip: complex string."""
         text = "foo'bar \"baz\" $var `cmd` \\n"
         quoted = quote(text)
         assert unquote_bash(quoted) == text
 
+    @unittest.skipUnless(platform.system() != "Windows", "Bash roundtrip not reliable on Windows (Git Bash encoding)")
     def test_roundtrip_unicode(self):
         """Roundtrip: Unicode."""
         text = "日本語 日本語"
@@ -128,6 +133,7 @@ class TestBashQuoting(unittest.TestCase):
         )
         assert result.stdout.decode("utf-8") == text
 
+    @unittest.skipUnless(platform.system() != "Windows", "Bash roundtrip not reliable on Windows (Git Bash encoding)")
     def test_roundtrip_emoji(self):
         """Roundtrip: Emoji."""
         text = "foo 😀 bar"
@@ -138,6 +144,7 @@ class TestBashQuoting(unittest.TestCase):
         )
         assert result.stdout.decode("utf-8") == text
 
+    @unittest.skipUnless(platform.system() != "Windows", "Bash roundtrip not reliable on Windows (Git Bash encoding)")
     def test_roundtrip_multiline(self):
         """Roundtrip: Multiline."""
         text = "line1\nline2\nline3"

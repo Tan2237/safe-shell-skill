@@ -118,6 +118,7 @@ class TestPowerShellQuoting(unittest.TestCase):
         if result.returncode == 0:
             assert result.stdout.strip() == text
 
+    @unittest.skipUnless(platform.system() == "Windows", "PowerShell only on Windows")
     def test_roundtrip_unicode(self):
         """Roundtrip: Unicode."""
         text = "日本語 テスト"
