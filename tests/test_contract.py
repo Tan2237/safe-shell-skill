@@ -4,54 +4,9 @@ These tests verify protocol stability and do not test quoting logic.
 """
 
 import base64
-import json
-import os
-import subprocess
-import sys
-import tempfile
 import unittest
-from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = REPO_ROOT / "skills" / "safe-shell" / "safe_shell.py"
-
-
-def run_safe_shell(request: dict) -> dict:
-    """Run safe-shell with a JSON request and return the parsed response."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
-        json.dump(request, f, ensure_ascii=False)
-        request_file = f.name
-
-    try:
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT), f"@{request_file}"],
-            capture_output=True,
-            env=env,
-        )
-        return json.loads(result.stdout.decode("utf-8"))
-    finally:
-        Path(request_file).unlink(missing_ok=True)
-
-
-def run_safe_shell_raw(content: str) -> dict:
-    """Run safe-shell with raw content (may be invalid JSON)."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
-        f.write(content)
-        request_file = f.name
-
-    try:
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT), f"@{request_file}"],
-            capture_output=True,
-            env=env,
-        )
-        return json.loads(result.stdout.decode("utf-8"))
-    finally:
-        Path(request_file).unlink(missing_ok=True)
+from .conftest import run_safe_shell, run_safe_shell_raw
 
 
 class TestProtocolContract(unittest.TestCase):

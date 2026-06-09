@@ -1,39 +1,11 @@
 """Tests for bash quoting."""
 
-import json
-import os
 import platform
 import shutil
 import subprocess
-import sys
-import tempfile
 import unittest
-from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = REPO_ROOT / "skills" / "safe-shell" / "safe_shell.py"
-
-
-def quote(text: str, shell: str = "bash") -> str:
-    """Get quoted string from safe-shell."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
-        json.dump({"shell": shell, "text": text}, f, ensure_ascii=False)
-        request_file = f.name
-
-    try:
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT), f"@{request_file}"],
-            capture_output=True,
-            env=env,
-        )
-        response = json.loads(result.stdout.decode("utf-8"))
-        if not response["ok"]:
-            raise Exception(f"{response['failureClass']}: {response['message']}")
-        return response["quoted"]
-    finally:
-        Path(request_file).unlink(missing_ok=True)
+from .conftest import quote, run_safe_shell
 
 
 def unquote_bash(quoted: str) -> str:
@@ -204,61 +176,19 @@ class TestMsys2Quoting(unittest.TestCase):
 
     def test_path_warning(self):
         """Paths starting with / get MSYS2_PATH_CONVERSION warning."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
-            json.dump({"shell": "msys2", "text": "/foo/bar"}, f, ensure_ascii=False)
-            request_file = f.name
-
-        try:
-            env = os.environ.copy()
-            env["PYTHONIOENCODING"] = "utf-8"
-            result = subprocess.run(
-                [sys.executable, str(SCRIPT), f"@{request_file}"],
-                capture_output=True,
-                env=env,
-            )
-            response = json.loads(result.stdout.decode("utf-8"))
-            assert response["ok"] is True
-            assert "warnings" in response
-            assert response["warnings"][0]["code"] == "MSYS2_PATH_CONVERSION"
-        finally:
-            Path(request_file).unlink(missing_ok=True)
+        response = run_safe_shell({"shell": "msys2", "text": "/foo/bar"})
+        assert response["ok"] is True
+        assert "warnings" in response
+        assert response["warnings"][0]["code"] == "MSYS2_PATH_CONVERSION"
 
     def test_double_slash_warning(self):
         """Paths starting with // get warning."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
-            json.dump({"shell": "msys2", "text": "//server/share"}, f, ensure_ascii=False)
-            request_file = f.name
-
-        try:
-            env = os.environ.copy()
-            env["PYTHONIOENCODING"] = "utf-8"
-            result = subprocess.run(
-                [sys.executable, str(SCRIPT), f"@{request_file}"],
-                capture_output=True,
-                env=env,
-            )
-            response = json.loads(result.stdout.decode("utf-8"))
-            assert response["ok"] is True
-            assert "warnings" in response
-        finally:
-            Path(request_file).unlink(missing_ok=True)
+        response = run_safe_shell({"shell": "msys2", "text": "//server/share"})
+        assert response["ok"] is True
+        assert "warnings" in response
 
     def test_no_warning_for_normal_text(self):
         """No warning for text not starting with /."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
-            json.dump({"shell": "msys2", "text": "foo/bar"}, f, ensure_ascii=False)
-            request_file = f.name
-
-        try:
-            env = os.environ.copy()
-            env["PYTHONIOENCODING"] = "utf-8"
-            result = subprocess.run(
-                [sys.executable, str(SCRIPT), f"@{request_file}"],
-                capture_output=True,
-                env=env,
-            )
-            response = json.loads(result.stdout.decode("utf-8"))
-            assert response["ok"] is True
-            assert "warnings" not in response
-        finally:
-            Path(request_file).unlink(missing_ok=True)
+        response = run_safe_shell({"shell": "msys2", "text": "foo/bar"})
+        assert response["ok"] is True
+        assert "warnings" not in response
