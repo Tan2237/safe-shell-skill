@@ -1,16 +1,8 @@
 """Tests for CMD quoting."""
 
-import json
-import os
 import platform
 import subprocess
-import sys
-import tempfile
 import unittest
-from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = REPO_ROOT / "skills" / "safe-shell" / "safe_shell.py"
 
 from .conftest import quote, run_safe_shell
 
