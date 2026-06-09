@@ -1,7 +1,6 @@
 """Tests for CMD quoting."""
 
 import platform
-import subprocess
 import unittest
 
 from .conftest import quote, run_safe_shell
