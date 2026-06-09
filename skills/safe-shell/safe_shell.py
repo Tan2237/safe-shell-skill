@@ -162,10 +162,12 @@ def validate_request(data: dict[str, Any]) -> tuple[str, str]:
 
     Validation order:
     1. Required fields
-    2. encoding
-    3. encoding data
-    4. input size (decoded)
-    5. shell
+    2. encoding value
+    3. text type check
+    4. encoding data decode
+    5. input size (decoded)
+    6. shell type and value
+    7. NUL character check
     """
     # 1. Required fields
     for field in ["shell", "text"]:
