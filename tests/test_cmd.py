@@ -173,6 +173,37 @@ class TestCmdQuoting(unittest.TestCase):
         assert response["ok"] is True
         assert "warnings" not in response
 
+    def test_newline_warning(self):
+        """Arguments containing newline get CMD_NEWLINE_INJECTION warning."""
+        response = run_safe_shell({"shell": "cmd", "text": "foo\nbar"})
+        assert response["ok"] is True
+        assert "warnings" in response
+        assert response["warnings"][0]["code"] == "CMD_NEWLINE_INJECTION"
+
+    def test_carriage_return_warning(self):
+        """Arguments containing CR get CMD_NEWLINE_INJECTION warning."""
+        response = run_safe_shell({"shell": "cmd", "text": "foo\rbar"})
+        assert response["ok"] is True
+        assert "warnings" in response
+        assert response["warnings"][0]["code"] == "CMD_NEWLINE_INJECTION"
+
+    def test_percent_and_newline_both_warned(self):
+        """Arguments with both % and newline get both warnings."""
+        response = run_safe_shell({"shell": "cmd", "text": "foo%bar%\nbaz"})
+        assert response["ok"] is True
+        assert "warnings" in response
+        codes = [w["code"] for w in response["warnings"]]
+        assert "CMD_PERCENT_EXPANSION" in codes
+        assert "CMD_NEWLINE_INJECTION" in codes
+
+    def test_crlf_single_warning(self):
+        """CRLF produces only one CMD_NEWLINE_INJECTION warning."""
+        response = run_safe_shell({"shell": "cmd", "text": "foo\r\nbar"})
+        assert response["ok"] is True
+        assert "warnings" in response
+        newline_warnings = [w for w in response["warnings"] if w["code"] == "CMD_NEWLINE_INJECTION"]
+        assert len(newline_warnings) == 1
+
 
 class TestCmdEdgeCases(unittest.TestCase):
     """Edge cases for CMD quoting."""

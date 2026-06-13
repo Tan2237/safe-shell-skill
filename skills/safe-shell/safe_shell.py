@@ -99,9 +99,11 @@ def quote_cmd(text: str) -> tuple[str, list[dict[str, str]] | None]:
     Note: CMD double-quoting does NOT prevent %VAR% expansion inside
     for loops or call contexts. This is an inherent CMD limitation.
     """
-    warnings = None
+    warnings = []
     if "%" in text:
-        warnings = [{"code": "CMD_PERCENT_EXPANSION", "message": "CMD may expand %VAR% patterns inside for/call contexts even within double quotes"}]
+        warnings.append({"code": "CMD_PERCENT_EXPANSION", "message": "CMD may expand %VAR% patterns inside for/call contexts even within double quotes"})
+    if "\n" in text or "\r" in text:
+        warnings.append({"code": "CMD_NEWLINE_INJECTION", "message": "CMD may interpret newlines as command separators"})
 
     # Build the quoted string
     result = ['"']
@@ -127,7 +129,7 @@ def quote_cmd(text: str) -> tuple[str, list[dict[str, str]] | None]:
     result.append('\\' * (backslashes * 2))
     result.append('"')
 
-    return ''.join(result), warnings
+    return ''.join(result), warnings or None
 
 
 def quote_for_shell(text: str, shell: str) -> tuple[str, list[dict[str, str]] | None]:
@@ -162,12 +164,12 @@ def validate_request(data: dict[str, Any]) -> tuple[str, str]:
 
     Validation order:
     1. Required fields
-    2. encoding value
+    2. encoding type and value
     3. text type check
     4. encoding data decode
-    5. input size (decoded)
-    6. shell type and value
-    7. NUL character check
+    5. NUL character check
+    6. input size (decoded, measured in UTF-8 bytes)
+    7. shell type and value
     """
     # 1. Required fields
     for field in ["shell", "text"]:
@@ -176,8 +178,11 @@ def validate_request(data: dict[str, Any]) -> tuple[str, str]:
 
     # 2. encoding (optional)
     encoding = data.get("encoding")
-    if encoding is not None and encoding != "" and encoding != "base64":
-        raise SafeShellError("UNSUPPORTED_ENCODING", f"encoding '{encoding}' is not supported")
+    if encoding is not None:
+        if not isinstance(encoding, str):
+            raise SafeShellError("INVALID_FIELD_TYPE", "encoding must be string")
+        if encoding != "" and encoding != "base64":
+            raise SafeShellError("UNSUPPORTED_ENCODING", f"encoding '{encoding}' is not supported")
 
     # 3. text type check
     text = data.get("text")
@@ -187,27 +192,37 @@ def validate_request(data: dict[str, Any]) -> tuple[str, str]:
     # 4. encoding data decode
     text = decode_text(text, encoding)
 
-    # 5. input size check (on decoded text)
-    if len(text) > MAX_INPUT_SIZE:
+    # 5. Check for NUL character
+    if "\x00" in text:
         raise SafeShellError(
-            "INPUT_TOO_LARGE",
-            f"input size {len(text)} exceeds maximum {MAX_INPUT_SIZE} bytes"
+            "UNQUOTABLE_CHARACTER",
+            "text contains NUL character (\\x00) which cannot be safely quoted"
         )
 
-    # 6. shell validation
+    # 6. input size check (on decoded text, measured in UTF-8 bytes)
+    text_len = len(text)
+    if text_len > MAX_INPUT_SIZE:
+        raise SafeShellError(
+            "INPUT_TOO_LARGE",
+            f"input exceeds maximum {MAX_INPUT_SIZE} bytes (character count: {text_len})"
+        )
+    # Only encode if character count is large enough to potentially exceed the byte limit
+    # (worst case: 4 bytes per character in UTF-8). Skip for short inputs.
+    if text_len > MAX_INPUT_SIZE // 4:
+        text_bytes = len(text.encode("utf-8"))
+        if text_bytes > MAX_INPUT_SIZE:
+            raise SafeShellError(
+                "INPUT_TOO_LARGE",
+                f"input size {text_bytes} exceeds maximum {MAX_INPUT_SIZE} bytes"
+            )
+
+    # 7. shell validation
     shell = data.get("shell")
     if not isinstance(shell, str):
         raise SafeShellError("INVALID_FIELD_TYPE", f"shell must be string, got: {type(shell).__name__}")
 
     if shell not in SUPPORTED_SHELLS:
         raise SafeShellError("UNSUPPORTED_SHELL", f"shell '{shell}' is not supported")
-
-    # 7. Check for NUL character
-    if "\x00" in text:
-        raise SafeShellError(
-            "UNQUOTABLE_CHARACTER",
-            "text contains NUL character (\\x00) which cannot be safely quoted"
-        )
 
     return shell, text
 
@@ -220,6 +235,9 @@ def process_request(request_data: dict[str, Any]) -> dict[str, Any]:
         return success(quoted, shell, warnings)
     except SafeShellError as e:
         return fail(e.failure_class, e.message)
+    except Exception as e:
+        print(f"safe-shell internal error: {e}", file=sys.stderr)
+        return fail("INTERNAL_ERROR", f"unexpected error: {type(e).__name__}")
 
 
 def main(args: list[str] | None = None) -> int:
@@ -235,8 +253,10 @@ def main(args: list[str] | None = None) -> int:
     request_file = None
     for arg in args:
         if arg.startswith("@"):
+            if request_file is not None:
+                print("Warning: multiple @file arguments found, using first one only", file=sys.stderr)
+                break
             request_file = arg[1:]
-            break
 
     if request_file is None:
         print("Usage: safe-shell @request.json", file=sys.stderr)
@@ -244,12 +264,18 @@ def main(args: list[str] | None = None) -> int:
 
     # Read request file
     try:
-        with open(request_file, "r", encoding="utf-8") as f:
-            raw_content = f.read(MAX_FILE_SIZE + 1)
-            if len(raw_content) > MAX_FILE_SIZE:
+        with open(request_file, "rb") as f:
+            raw_bytes = f.read(MAX_FILE_SIZE + 1)
+            if len(raw_bytes) > MAX_FILE_SIZE:
                 response = fail("INPUT_TOO_LARGE", f"request file exceeds maximum {MAX_FILE_SIZE} bytes")
                 print(json.dumps(response, ensure_ascii=False))
                 return 1
+        try:
+            raw_content = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as e:
+            response = fail("INVALID_JSON", f"file encoding error: {e}")
+            print(json.dumps(response, ensure_ascii=False))
+            return 1
     except FileNotFoundError:
         response = fail("INVALID_JSON", f"file not found: {request_file}")
         print(json.dumps(response, ensure_ascii=False))

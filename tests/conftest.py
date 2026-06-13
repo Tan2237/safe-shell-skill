@@ -69,3 +69,22 @@ def run_safe_shell_raw(content: str) -> dict:
         return json.loads(result.stdout.decode("utf-8"))
     finally:
         Path(request_file).unlink(missing_ok=True)
+
+
+def run_safe_shell_bytes(raw_bytes: bytes) -> dict:
+    """Run safe-shell with raw bytes file content (for testing encoding errors)."""
+    with tempfile.NamedTemporaryFile(mode="wb", suffix=".json", delete=False) as f:
+        f.write(raw_bytes)
+        request_file = f.name
+
+    try:
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), f"@{request_file}"],
+            capture_output=True,
+            env=env,
+        )
+        return json.loads(result.stdout.decode("utf-8"))
+    finally:
+        Path(request_file).unlink(missing_ok=True)

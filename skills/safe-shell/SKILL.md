@@ -97,6 +97,7 @@ Failure:
 | `INVALID_ENCODING_DATA` | base64 decode failed |
 | `INPUT_TOO_LARGE` | Input > 1 MiB |
 | `UNQUOTABLE_CHARACTER` | Contains NUL |
+| `INTERNAL_ERROR` | Unexpected internal error |
 
 ## Warnings
 
@@ -134,20 +135,31 @@ Failure:
 > that environment variable expansion may occur. This is an inherent CMD
 > limitation with no reliable workaround.
 
+```json
+{
+  "warnings": [
+    {
+      "code": "CMD_NEWLINE_INJECTION",
+      "message": "CMD may interpret newlines as command separators"
+    }
+  ]
+}
+```
+
+> **CMD newline warning.**
+>
+> While `CommandLineToArgvW` correctly preserves newlines within double-quoted
+> arguments, `cmd.exe` may interpret literal newlines as command separators
+> when the quoted argument appears in a batch script or is passed through
+> multiple layers of command processing. Agents should be cautious when quoting
+> arguments containing newlines for CMD.
+
 ## CMD Implementation
 
 CMD quoting implements the MS C runtime `CommandLineToArgvW` convention,
 following the same rules as Python's `subprocess.list2cmdline()`.
 Unlike `list2cmdline`, the output is always double-quoted so agents can
 safely concatenate arguments.
-
-> **CMD newline limitation.**
->
-> While `CommandLineToArgvW` correctly preserves newlines within double-quoted
-> arguments, `cmd.exe` itself may interpret literal newlines as command
-> separators when the quoted argument appears in a batch script or is passed
-> through multiple layers of command processing. Agents should be cautious
-> when quoting arguments containing newlines for CMD.
 
 ## Limits
 

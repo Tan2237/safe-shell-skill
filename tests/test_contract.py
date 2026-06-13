@@ -6,7 +6,7 @@ These tests verify protocol stability and do not test quoting logic.
 import base64
 import unittest
 
-from .conftest import run_safe_shell, run_safe_shell_raw
+from .conftest import run_safe_shell, run_safe_shell_raw, run_safe_shell_bytes
 
 
 class TestProtocolContract(unittest.TestCase):
@@ -80,6 +80,21 @@ class TestProtocolContract(unittest.TestCase):
         assert result["ok"] is False
         assert result["failureClass"] == "INPUT_TOO_LARGE"
 
+    def test_max_input_size_unicode_boundary(self):
+        """Size limit uses UTF-8 bytes, not character count."""
+        # CJK '你' = 3 bytes UTF-8. 350000 chars = 1050000 bytes > 1 MiB
+        over_limit_cjk = "你" * 350000
+        result = run_safe_shell({"shell": "bash", "text": over_limit_cjk})
+        assert result["ok"] is False
+        assert result["failureClass"] == "INPUT_TOO_LARGE"
+
+    def test_max_input_size_unicode_within_limit(self):
+        """Multi-byte text within byte limit succeeds."""
+        # CJK '你' = 3 bytes UTF-8. 300000 chars = 900000 bytes < 1 MiB
+        within_limit_cjk = "你" * 300000
+        result = run_safe_shell({"shell": "bash", "text": within_limit_cjk})
+        assert result["ok"] is True
+
     def test_max_input_size_applies_to_decoded(self):
         """MAX_INPUT_SIZE applies to decoded text, not base64 string length."""
         # Create base64 that decodes to > 1 MiB
@@ -109,9 +124,23 @@ class TestProtocolContract(unittest.TestCase):
         assert result["failureClass"] == "INVALID_FIELD_TYPE"
         assert "shell" in result["message"]
 
+    def test_invalid_field_type_encoding(self):
+        """INVALID_FIELD_TYPE when encoding is not string."""
+        result = run_safe_shell({"shell": "bash", "text": "foo", "encoding": 0})
+        assert result["failureClass"] == "INVALID_FIELD_TYPE"
+        assert "encoding" in result["message"]
+
     def test_all_supported_shells(self):
         """All supported shells work."""
         for shell in ["bash", "zsh", "fish", "powershell", "cmd", "msys2"]:
             result = run_safe_shell({"shell": shell, "text": "foo"})
             assert result["ok"] is True, f"shell {shell} failed"
             assert result["shell"] == shell
+
+    def test_file_encoding_error(self):
+        """INVALID_JSON for non-UTF-8 file content."""
+        # Latin-1 encoded content that is not valid UTF-8
+        result = run_safe_shell_bytes(b'\xff\xfe{"shell": "bash"}')
+        assert result["ok"] is False
+        assert result["failureClass"] == "INVALID_JSON"
+        assert "encoding error" in result["message"]
