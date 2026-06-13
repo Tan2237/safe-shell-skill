@@ -173,6 +173,17 @@ python safe_shell.py @request.json
 | `UNQUOTABLE_CHARACTER` | 含 NUL 字符 |
 | `INTERNAL_ERROR` | 内部意外错误 |
 
+## MSYS2 路径警告
+
+MSYS2 路径转换警告是**启发式**的：
+
+- 检测到以 `/` 或 `//` 开头的文本时触发
+- 不保证检测到所有会被转换的情况
+- 例如 `/c/foo`、`/usr/bin` 风险较高，但不在检测范围内
+- **无警告不等于安全**
+
+如需精确控制，请查阅 MSYS2 文档了解 Cygwin 路径转换规则。
+
 ## CMD 说明
 
 > **CMD 支持是尽力而为。**
