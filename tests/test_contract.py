@@ -4,9 +4,12 @@ These tests verify protocol stability and do not test quoting logic.
 """
 
 import base64
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from .conftest import run_safe_shell, run_safe_shell_raw, run_safe_shell_bytes
+from .conftest import run_safe_shell, run_safe_shell_raw, run_safe_shell_bytes, run_safe_shell_cli, write_request_file
 
 
 class TestProtocolContract(unittest.TestCase):
@@ -144,3 +147,94 @@ class TestProtocolContract(unittest.TestCase):
         assert result["ok"] is False
         assert result["failureClass"] == "INVALID_JSON"
         assert "encoding error" in result["message"]
+
+
+class TestCLIContract(unittest.TestCase):
+    """Tests for main() CLI entry point behavior."""
+
+    def test_no_args_returns_1(self):
+        """No arguments prints usage to stderr and returns 1."""
+        proc = run_safe_shell_cli([])
+        assert proc.returncode == 1
+        assert b"Usage" in proc.stderr
+
+    def test_no_at_file_returns_1(self):
+        """Arguments without @ prefix prints usage and returns 1."""
+        proc = run_safe_shell_cli(["foo.json"])
+        assert proc.returncode == 1
+        assert b"Usage" in proc.stderr
+
+    def test_file_not_found(self):
+        """Nonexistent file returns INVALID_JSON."""
+        proc = run_safe_shell_cli(["@/nonexistent/path/file.json"])
+        assert proc.returncode == 1
+        response = json.loads(proc.stdout.decode("utf-8"))
+        assert response["ok"] is False
+        assert response["failureClass"] == "INVALID_JSON"
+        assert "not found" in response["message"]
+
+    def test_file_too_large(self):
+        """File exceeding MAX_FILE_SIZE returns INPUT_TOO_LARGE."""
+        # MAX_FILE_SIZE = 4 MiB. Write 4 MiB + 1 byte.
+        large_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="wb", suffix=".json", delete=False) as f:
+                f.write(b'"' + b"x" * (4 * 1024 * 1024 + 1) + b'"')
+                large_path = f.name
+            proc = run_safe_shell_cli([f"@{large_path}"])
+            assert proc.returncode == 1
+            response = json.loads(proc.stdout.decode("utf-8"))
+            assert response["ok"] is False
+            assert response["failureClass"] == "INPUT_TOO_LARGE"
+        finally:
+            if large_path:
+                Path(large_path).unlink(missing_ok=True)
+
+    def test_non_dict_json(self):
+        """JSON array or string root returns INVALID_JSON."""
+        # Array root
+        result = run_safe_shell_raw("[1, 2, 3]")
+        assert result["ok"] is False
+        assert result["failureClass"] == "INVALID_JSON"
+
+        # String root
+        result = run_safe_shell_raw('"hello"')
+        assert result["ok"] is False
+        assert result["failureClass"] == "INVALID_JSON"
+
+    def test_success_returns_0(self):
+        """Successful request returns exit code 0."""
+        path = write_request_file({"shell": "bash", "text": "hello"})
+        try:
+            proc = run_safe_shell_cli([f"@{path}"])
+            assert proc.returncode == 0
+            response = json.loads(proc.stdout.decode("utf-8"))
+            assert response["ok"] is True
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_failure_returns_1(self):
+        """Failed validation returns exit code 1."""
+        path = write_request_file({"shell": "unknown", "text": "hello"})
+        try:
+            proc = run_safe_shell_cli([f"@{path}"])
+            assert proc.returncode == 1
+            response = json.loads(proc.stdout.decode("utf-8"))
+            assert response["ok"] is False
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_multiple_at_file_uses_first(self):
+        """Multiple @file args uses first one and prints warning to stderr."""
+        path1 = write_request_file({"shell": "bash", "text": "first"})
+        path2 = write_request_file({"shell": "bash", "text": "second"})
+        try:
+            proc = run_safe_shell_cli([f"@{path1}", f"@{path2}"])
+            assert proc.returncode == 0
+            response = json.loads(proc.stdout.decode("utf-8"))
+            assert response["ok"] is True
+            assert response["quoted"] == "'first'"
+            assert b"Warning" in proc.stderr
+        finally:
+            Path(path1).unlink(missing_ok=True)
+            Path(path2).unlink(missing_ok=True)

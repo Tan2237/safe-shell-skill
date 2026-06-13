@@ -88,3 +88,24 @@ def run_safe_shell_bytes(raw_bytes: bytes) -> dict:
         return json.loads(result.stdout.decode("utf-8"))
     finally:
         Path(request_file).unlink(missing_ok=True)
+
+
+def run_safe_shell_cli(args: list[str]) -> subprocess.CompletedProcess:
+    """Run safe-shell with arbitrary CLI args, returning full process result.
+
+    Use this for testing exit codes, stderr, and edge-case CLI invocations.
+    """
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    return subprocess.run(
+        [sys.executable, str(SCRIPT)] + args,
+        capture_output=True,
+        env=env,
+    )
+
+
+def write_request_file(request: dict) -> str:
+    """Write a request dict to a temp JSON file and return its path."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+        json.dump(request, f, ensure_ascii=False)
+        return f.name
