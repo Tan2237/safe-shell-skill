@@ -1,7 +1,7 @@
 ---
 name: safe-shell
 description: |
-  Safely quote shell arguments for AI agents.
+  Quote a shell argument for AI agents.
 
   Usage:
     python safe_shell.py @request.json
@@ -14,7 +14,9 @@ description: |
 
 # safe-shell — Argument Quoting Service
 
-A JSON-RPC style service that safely quotes shell arguments for AI agents.
+A JSON-based CLI quoting service for AI agents.
+Quotes a single shell argument using correct quoting conventions.
+CMD has inherent limitations that no quoting can fully overcome — see Warnings.
 
 ## Quick Reference
 
@@ -82,27 +84,32 @@ Failure:
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
 | `shell` | Yes | string | Shell type (see above) |
-| `text` | Yes | string | Text to quote |
-| `encoding` | No | string | `base64` to decode first |
+| `text` | Yes | string | Text to quote, or base64-encoded data when `encoding` is `base64` |
+| `encoding` | No | string | `base64` — the service will decode it before quoting |
 
 ## Failure Classes
 
 | failureClass | Meaning |
 |--------------|---------|
-| `INVALID_JSON` | JSON parse failed |
+| `INVALID_JSON` | Request could not be read or parsed as valid JSON |
 | `MISSING_REQUIRED_FIELD` | Required field missing |
 | `INVALID_FIELD_TYPE` | Field type error (e.g. text is number) |
 | `UNSUPPORTED_SHELL` | shell not in enum |
 | `UNSUPPORTED_ENCODING` | encoding not supported |
 | `INVALID_ENCODING_DATA` | base64 decode failed |
-| `INPUT_TOO_LARGE` | Input > 1 MiB |
+| `INPUT_TOO_LARGE` | Decoded text > 1 MiB, or request file > 4 MiB |
 | `UNQUOTABLE_CHARACTER` | Contains NUL |
 | `INTERNAL_ERROR` | Unexpected internal error |
 
 ## Warnings
 
+Warnings appear as an extra field in success responses:
+
 ```json
 {
+  "ok": true,
+  "quoted": "'/foo'",
+  "shell": "msys2",
   "warnings": [
     {
       "code": "MSYS2_PATH_CONVERSION",
@@ -119,6 +126,9 @@ Failure:
 
 ```json
 {
+  "ok": true,
+  "quoted": "\"foo%PATH%\"",
+  "shell": "cmd",
   "warnings": [
     {
       "code": "CMD_PERCENT_EXPANSION",
@@ -137,6 +147,9 @@ Failure:
 
 ```json
 {
+  "ok": true,
+  "quoted": "\"foo\nbar\"",
+  "shell": "cmd",
   "warnings": [
     {
       "code": "CMD_NEWLINE_INJECTION",
@@ -163,5 +176,6 @@ safely concatenate arguments.
 
 ## Limits
 
-- **MAX_INPUT_SIZE**: 1 MiB
+- **MAX_INPUT_SIZE**: 1 MiB (decoded text)
+- **MAX_FILE_SIZE**: 4 MiB (request file)
 - **Boundary**: Exactly ONE argument per request

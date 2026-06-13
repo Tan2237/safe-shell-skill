@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""safe-shell: A JSON-RPC style argument quoting service for AI agents.
+"""safe-shell: A JSON-based CLI quoting service for AI agents.
 
 Usage: safe-shell @request.json
 
