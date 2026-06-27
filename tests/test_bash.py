@@ -187,6 +187,19 @@ class TestMsys2Quoting(unittest.TestCase):
         assert response["ok"] is True
         assert "warnings" in response
 
+    def test_option_value_path_warning(self):
+        """Option values like --mount=/tmp/foo get MSYS2_PATH_CONVERSION warning."""
+        response = run_safe_shell({"shell": "msys2", "text": "--mount=/tmp/foo"})
+        assert response["ok"] is True
+        assert "warnings" in response
+        assert response["warnings"][0]["code"] == "MSYS2_PATH_CONVERSION"
+
+    def test_url_no_warning(self):
+        """URLs (https://...) do not trigger MSYS2 path warning (no false positive)."""
+        response = run_safe_shell({"shell": "msys2", "text": "https://example.com/path"})
+        assert response["ok"] is True
+        assert "warnings" not in response
+
     def test_no_warning_for_normal_text(self):
         """No warning for text not starting with /."""
         response = run_safe_shell({"shell": "msys2", "text": "foo/bar"})

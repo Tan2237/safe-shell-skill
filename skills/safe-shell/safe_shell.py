@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import re
 import sys
 from typing import Any
 
@@ -68,8 +69,8 @@ def quote_bash_zsh_fish_msys2(text: str, shell: str) -> tuple[str, list[dict[str
     'foo'bar' -> 'foo'\\''bar'
     """
     warnings = None
-    if shell == "msys2" and (text.startswith("/") or text.startswith("//")):
-        warnings = [{"code": "MSYS2_PATH_CONVERSION", "message": "MSYS2 may convert paths starting with /"}]
+    if shell == "msys2" and re.search(r'(^|=)/', text):
+        warnings = [{"code": "MSYS2_PATH_CONVERSION", "message": "MSYS2 may convert POSIX paths (leading / or =/path)"}]
 
     # Replace ' with '\'' and wrap in single quotes
     quoted = "'" + text.replace("'", "'\\''") + "'"
@@ -102,6 +103,8 @@ def quote_cmd(text: str) -> tuple[str, list[dict[str, str]] | None]:
     warnings = []
     if "%" in text:
         warnings.append({"code": "CMD_PERCENT_EXPANSION", "message": "CMD may expand %VAR% patterns inside for/call contexts even within double quotes"})
+    if "!" in text:
+        warnings.append({"code": "CMD_DELAYED_EXPANSION", "message": "CMD may expand !VAR! when delayed expansion is enabled"})
     if "\n" in text or "\r" in text:
         warnings.append({"code": "CMD_NEWLINE_INJECTION", "message": "CMD may interpret newlines as command separators"})
 

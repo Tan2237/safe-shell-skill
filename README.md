@@ -1,8 +1,20 @@
 # safe-shell skill
 
-通用的 Shell 参数引用 Agent Skill。安全地为 bash、zsh、fish、PowerShell、CMD、MSYS2 引用文本参数，避免特殊字符被 Shell 解释执行。
+通用的 Shell 参数引用 Agent Skill。将任意文本稳定转换为恰好一个 Shell 参数，避免 quoting / escaping 错误导致参数被错误拆分、截断或被 Shell 意外解释。
 
 适合 Agent 拼接 Shell 命令、传递用户输入到命令行、处理含特殊字符（引号、空格、`$`、反引号等）的参数，以及任何不希望被 Shell 静默篡改或注入的场景。
+
+## safe-shell 不做什么
+
+safe-shell **不**提供以下保证：
+
+- 不校验命令意图，不阻止破坏性命令
+- 不能让 `eval` 变安全
+- 不能让整段 shell 脚本变安全
+- 不能净化传给 `bash -c` / `sh -c` / `powershell -Command` 的 shell 代码
+- 不处理 shell 语法（管道、`&&`、重定向、反引号）
+
+safe-shell 只负责把**一个数据参数**正确引用为字面量。
 
 ## 特性
 
@@ -51,18 +63,19 @@ skills/safe-shell/
 # 用户输入
 USER_INPUT="foo'bar"
 
-# 错误做法：直接拼接到需要引用的地方
+# 错误做法：直接拼接，未引用
 filename=$USER_INPUT
 cat $filename  # word splitting + glob expansion
 
-# 更危险：直接传入执行上下文
+# 更危险：传入执行上下文
 bash -c "echo $USER_INPUT"  # $USER_INPUT 会被重新解析
 eval "$USER_INPUT"  # 直接执行用户输入
 
-# 正确做法：先引用
-QUOTED="'foo'\''bar'"
-cat $QUOTED  # 安全地作为字面量参数
-bash -c "echo $QUOTED"  # 安全地作为字面量输出
+# 正确做法：引用后直接内联到命令中（safe-shell 生成此形式）
+cat 'foo'\''bar'
+
+# 注意：shell 不会重新解析变量展开中的引号
+# QUOTED="'foo'\''bar'"; cat $QUOTED   ← 错误！cat 会去找名为 'foo'\''bar' 的文件
 ```
 
 不同 Shell 的引用规则不同：
@@ -74,6 +87,15 @@ bash -c "echo $QUOTED"  # 安全地作为字面量输出
 | CMD | `"` `\` | `"foo\"bar"`（反斜杠转义，尾部反斜杠要加倍） |
 
 手动处理容易出错，safe-shell 自动应用正确的规则。
+
+## 为什么不直接用 shlex.quote
+
+`shlex.quote` 只覆盖 POSIX 系 shell（bash/zsh），且不提示各 Shell 的特有陷阱。safe-shell 在此基础上额外提供：
+
+- 跨 Shell 统一接口：bash、zsh、fish、PowerShell、CMD、MSYS2 共用同一套 JSON 协议。
+- Shell 专属警告：MSYS2 路径转换、CMD `%VAR%` 展开、CMD `!VAR!` 延迟展开、CMD 换行注入。
+- 结构化 JSON 输入输出，便于 Agent 通过文件调用，避免请求本身的引用问题（支持 base64）。
+- 与模型行为解耦的确定性引用，不依赖 LLM 对引用规则的记忆。
 
 ## 基本用法
 
@@ -177,9 +199,8 @@ python safe_shell.py @request.json
 
 MSYS2 路径转换警告是**启发式**的：
 
-- 检测到以 `/` 或 `//` 开头的文本时触发
-- 不保证检测到所有会被转换的情况
-- 例如 `/c/foo`、`/usr/bin` 风险较高，但不在检测范围内
+- 检测到以 `/` 开头的文本（如 `/usr/bin`），或 `=/路径` 形式的选项值（如 `--mount=/tmp/foo`）时触发
+- 不保证检测到所有会被转换的情况（例如路径出现在参数中间）
 - **无警告不等于安全**
 
 如需精确控制，请查阅 MSYS2 文档了解 Cygwin 路径转换规则。

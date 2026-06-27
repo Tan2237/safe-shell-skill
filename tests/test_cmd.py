@@ -173,6 +173,20 @@ class TestCmdQuoting(unittest.TestCase):
         assert response["ok"] is True
         assert "warnings" not in response
 
+    def test_exclamation_warning(self):
+        """Arguments containing ! get CMD_DELAYED_EXPANSION warning."""
+        response = run_safe_shell({"shell": "cmd", "text": "foo!PATH!bar"})
+        assert response["ok"] is True
+        assert "warnings" in response
+        assert response["warnings"][0]["code"] == "CMD_DELAYED_EXPANSION"
+
+    def test_no_exclamation_no_delayed_warning(self):
+        """Arguments without ! do not get CMD_DELAYED_EXPANSION warning."""
+        response = run_safe_shell({"shell": "cmd", "text": "foo%bar%"})
+        assert response["ok"] is True
+        codes = [w["code"] for w in response.get("warnings", [])]
+        assert "CMD_DELAYED_EXPANSION" not in codes
+
     def test_newline_warning(self):
         """Arguments containing newline get CMD_NEWLINE_INJECTION warning."""
         response = run_safe_shell({"shell": "cmd", "text": "foo\nbar"})
