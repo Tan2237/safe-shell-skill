@@ -9,7 +9,7 @@ description: |
   Request format (JSON):
     {"shell": "bash", "text": "foo'bar"}
 
-  Supports: bash, zsh, fish, powershell, cmd, msys2
+  Supports: bash, zsh, fish, powershell, cmd (safe character subset), msys2
 
   Resolve SAFE_SHELL_SCRIPT as the absolute path to safe_shell.py
   next to this SKILL.md. Never assume it is in the current directory.
@@ -23,7 +23,7 @@ description: |
 
 A JSON-based CLI quoting service for AI agents.
 Quotes a single shell argument using correct quoting conventions.
-CMD has inherent limitations that no quoting can fully overcome — see Warnings.
+CMD rejects characters that no general quoting rule can preserve safely — see CMD Rejections.
 
 ## Runtime Script Resolution
 
@@ -150,7 +150,7 @@ Failure:
 | `UNSUPPORTED_ENCODING` | encoding not supported |
 | `INVALID_ENCODING_DATA` | base64 decode failed |
 | `INPUT_TOO_LARGE` | Decoded text > 1 MiB, or request file > 4 MiB |
-| `UNQUOTABLE_CHARACTER` | Contains NUL |
+| `UNQUOTABLE_CHARACTER` | Contains NUL, an unpaired surrogate, or a CMD-unsafe character |
 | `INTERNAL_ERROR` | Unexpected internal error |
 
 ## Warnings
@@ -177,76 +177,20 @@ Warnings appear as an extra field in success responses:
 > (e.g. `--mount=/tmp/foo`). Does not guarantee detecting all cases.
 > No warning ≠ safe.
 
-```json
-{
-  "ok": true,
-  "quoted": "\"foo%PATH%\"",
-  "shell": "cmd",
-  "warnings": [
-    {
-      "code": "CMD_PERCENT_EXPANSION",
-      "message": "CMD may expand %VAR% patterns inside for/call contexts even within double quotes"
-    }
-  ]
-}
-```
+## CMD Rejections
 
-> **CMD percent warning.**
->
-> CMD double-quoting does NOT prevent `%VAR%` expansion inside `for` loops
-> or `call` contexts. If the argument contains `%`, the Agent should be aware
-> that environment variable expansion may occur. This is an inherent CMD
-> limitation with no reliable workaround.
+`cmd.exe` applies shell parsing before the target program parses its arguments. No general quoting rule can preserve every character through both layers. To maintain the one-literal-argument guarantee, CMD requests fail with `UNQUOTABLE_CHARACTER` when text contains:
 
-```json
-{
-  "ok": true,
-  "quoted": "\"foo!PATH!\"",
-  "shell": "cmd",
-  "warnings": [
-    {
-      "code": "CMD_DELAYED_EXPANSION",
-      "message": "CMD may expand !VAR! when delayed expansion is enabled"
-    }
-  ]
-}
-```
+- `U+0022` (double quote)
+- `%` (environment expansion)
+- `!` (delayed expansion)
+- CR or LF (command-separator risk)
 
-> **CMD delayed expansion warning.**
->
-> When `setlocal EnableDelayedExpansion` is active, CMD expands `!VAR!`
-> even inside double quotes. This is off by default but common in batch
-> scripts. If the argument contains `!`, treat the value as potentially
-> subject to variable expansion.
-
-```json
-{
-  "ok": true,
-  "quoted": "\"foo\nbar\"",
-  "shell": "cmd",
-  "warnings": [
-    {
-      "code": "CMD_NEWLINE_INJECTION",
-      "message": "CMD may interpret newlines as command separators"
-    }
-  ]
-}
-```
-
-> **CMD newline warning.**
->
-> While `CommandLineToArgvW` correctly preserves newlines within double-quoted
-> arguments, `cmd.exe` may interpret literal newlines as command separators
-> when the quoted argument appears in a batch script or is passed through
-> multiple layers of command processing. Agents should be cautious when quoting
-> arguments containing newlines for CMD.
+Treat this as a hard failure. Do not use the returned message as shell syntax and do not attempt to bypass the rejection with manual escaping.
 
 ## CMD Implementation
 
-CMD quoting implements the MS C runtime `CommandLineToArgvW` convention,
-following the same rules as Python's `subprocess.list2cmdline()`.
-Unlike `list2cmdline`, the output is always double-quoted so agents can
-safely concatenate arguments.
+For accepted input, CMD quoting follows the MS C runtime `CommandLineToArgvW` convention and always wraps the result in double quotes. Target programs may use custom argument parsers, so validate application-specific behavior when exact parsing matters.
 
 ## Limits
 

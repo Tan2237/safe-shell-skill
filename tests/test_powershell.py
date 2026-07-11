@@ -1,5 +1,3 @@
-"""Tests for PowerShell quoting."""
-
 import platform
 import subprocess
 import unittest
@@ -7,143 +5,54 @@ import unittest
 from .conftest import quote
 
 
-class TestPowerShellQuoting(unittest.TestCase):
-    """Tests for PowerShell quoting correctness."""
+def run_through_powershell(text: str) -> str:
+    quoted = quote(text, 'powershell')
+    result = subprocess.run(
+        [
+            'powershell',
+            '-NoProfile',
+            '-Command',
+            '[Console]::OutputEncoding=[Text.Encoding]::UTF8;' + '[Console]::Out.Write(' + quoted + ')',
+        ],
+        capture_output=True,
+        encoding='utf-8',
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
 
+
+class TestPowerShellQuoting(unittest.TestCase):
     def test_simple_text(self):
-        """Simple text is single-quoted."""
-        assert quote("foo", "powershell") == "'foo'"
+        assert quote('foo', 'powershell') == '\'foo\''
 
     def test_text_with_space(self):
-        """Text with space is single-quoted."""
-        assert quote("foo bar", "powershell") == "'foo bar'"
+        assert quote('foo bar', 'powershell') == '\'foo bar\''
 
     def test_text_with_single_quote(self):
-        """Single quote is doubled."""
-        assert quote("foo'bar", "powershell") == "'foo''bar'"
+        assert quote('foo\'bar', 'powershell') == '\'foo\'\'bar\''
 
     def test_text_with_double_quote(self):
-        """Double quote is preserved in single quotes."""
-        assert quote('foo"bar', "powershell") == "'foo\"bar'"
+        text = 'foo' + chr(34) + 'bar'
+        assert quote(text, 'powershell') == '\'' + text + '\''
 
-    def test_text_with_dollar(self):
-        """Dollar sign is preserved in single quotes (no variable expansion)."""
-        assert quote("foo$bar", "powershell") == "'foo$bar'"
-
-    def test_text_with_backtick(self):
-        """Backtick is preserved in single quotes (no escape)."""
-        assert quote("foo`bar", "powershell") == "'foo`bar'"
-
-    def test_text_with_backslash(self):
-        """Backslash is preserved in single quotes."""
-        assert quote("foo\\bar", "powershell") == "'foo\\bar'"
-
-    def test_text_with_newline(self):
-        """Newline is preserved in single quotes."""
-        assert quote("foo\nbar", "powershell") == "'foo\nbar'"
-
-    def test_text_with_special_chars(self):
-        """Multiple special chars."""
-        text = "foo$bar`baz\\qux"
-        quoted = quote(text, "powershell")
-        assert quoted == "'foo$bar`baz\\qux'"
+    def test_literal_special_characters(self):
+        text = 'foo$bar' + chr(96) + 'baz\\qux'
+        assert quote(text, 'powershell') == '\'' + text + '\''
 
     def test_empty_string(self):
-        """Empty string produces empty quotes."""
-        assert quote("", "powershell") == "''"
+        assert quote('', 'powershell') == '\'\''
 
-    def test_only_single_quote(self):
-        """Only single quote."""
-        assert quote("'", "powershell") == "''''"
-
-    def test_multiple_single_quotes(self):
-        """Multiple single quotes."""
-        assert quote("a'b'c", "powershell") == "'a''b''c'"
-
-    @unittest.skipUnless(platform.system() == "Windows", "PowerShell only on Windows")
-    def test_roundtrip_simple(self):
-        """Roundtrip: quote then unquote returns original."""
-        text = "Hello, World!"
-        quoted = quote(text, "powershell")
-
-        # Use PowerShell to unquote
-        result = subprocess.run(
-            ["powershell", "-Command", f"Write-Output {quoted}"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            # PowerShell adds trailing newline
-            assert result.stdout.strip() == text
-
-    @unittest.skipUnless(platform.system() == "Windows", "PowerShell only on Windows")
-    def test_roundtrip_with_single_quote(self):
-        """Roundtrip: string with single quote."""
-        text = "foo'bar"
-        quoted = quote(text, "powershell")
-
-        result = subprocess.run(
-            ["powershell", "-Command", f"Write-Output {quoted}"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            assert result.stdout.strip() == text
-
-    @unittest.skipUnless(platform.system() == "Windows", "PowerShell only on Windows")
-    def test_roundtrip_unicode(self):
-        """Roundtrip: Unicode."""
-        text = "日本語 テスト"
-        quoted = quote(text, "powershell")
-
-        result = subprocess.run(
-            ["powershell", "-Command", f"Write-Output {quoted}"],
-            capture_output=True,
-        )
-        if result.returncode == 0:
-            # PowerShell on Windows may use different encoding
-            # Just verify the quoting is correct
-            assert quoted == "'日本語 テスト'"
-
-    @unittest.skipUnless(platform.system() == "Windows", "PowerShell only on Windows")
-    def test_roundtrip_multiline(self):
-        """Roundtrip: Multiline."""
-        text = "line1\nline2"
-        quoted = quote(text, "powershell")
-
-        result = subprocess.run(
-            ["powershell", "-Command", f"Write-Output {quoted}"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            # PowerShell may normalize line endings
-            assert result.stdout.strip().replace("\r\n", "\n") == text
-
-    @unittest.skipUnless(platform.system() == "Windows", "PowerShell only on Windows")
-    def test_variable_not_expanded(self):
-        """$VAR is not expanded in single quotes."""
-        quoted = quote("$HOME", "powershell")
-        assert quoted == "'$HOME'"
-
-        result = subprocess.run(
-            ["powershell", "-Command", f"Write-Output {quoted}"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            assert result.stdout.strip() == "$HOME"
-
-    @unittest.skipUnless(platform.system() == "Windows", "PowerShell only on Windows")
-    def test_backtick_not_escaped(self):
-        """Backtick is literal in single quotes."""
-        quoted = quote("foo`bar", "powershell")
-        assert quoted == "'foo`bar'"
-
-        result = subprocess.run(
-            ["powershell", "-Command", f"Write-Output {quoted}"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            assert result.stdout.strip() == "foo`bar"
+    @unittest.skipUnless(platform.system() == 'Windows', 'PowerShell only on Windows')
+    def test_roundtrip_through_powershell(self):
+        cases = [
+            'Hello, World!',
+            'foo\'bar',
+            '$HOME',
+            'foo' + chr(96) + 'bar',
+            '日本語 テスト',
+            'line1\nline2',
+            '  surrounding spaces  ',
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                assert run_through_powershell(text) == text

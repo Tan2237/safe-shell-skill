@@ -31,6 +31,7 @@ MAX_INPUT_SIZE = 1024 * 1024  # 1 MiB
 MAX_FILE_SIZE = 4 * 1024 * 1024  # 4 MiB (base64 of 1 MiB ≈ 1.37 MiB; leaves headroom for JSON overhead)
 
 SUPPORTED_SHELLS = frozenset(["bash", "zsh", "fish", "powershell", "cmd", "msys2"])
+CMD_UNQUOTABLE_CHARACTERS = frozenset({chr(34), '%', '!', '\r', '\n'})
 
 
 class SafeShellError(Exception):
@@ -87,7 +88,7 @@ def quote_powershell(text: str) -> str:
 
 
 def quote_cmd(text: str) -> tuple[str, list[dict[str, str]] | None]:
-    """Quote for CMD using CommandLineToArgvW rules.
+    '''Quote for CMD using CommandLineToArgvW rules.
 
     This implements the MS C runtime convention (same as subprocess.list2cmdline):
     - Backslashes before quotes: 2n backslashes + quote -> n backslashes + escaped quote
@@ -97,16 +98,8 @@ def quote_cmd(text: str) -> tuple[str, list[dict[str, str]] | None]:
     Unlike subprocess.list2cmdline, this always returns a quoted string
     so agents can safely concatenate arguments.
 
-    Note: CMD double-quoting does NOT prevent %VAR% expansion inside
-    for loops or call contexts. This is an inherent CMD limitation.
-    """
-    warnings = []
-    if "%" in text:
-        warnings.append({"code": "CMD_PERCENT_EXPANSION", "message": "CMD may expand %VAR% patterns inside for/call contexts even within double quotes"})
-    if "!" in text:
-        warnings.append({"code": "CMD_DELAYED_EXPANSION", "message": "CMD may expand !VAR! when delayed expansion is enabled"})
-    if "\n" in text or "\r" in text:
-        warnings.append({"code": "CMD_NEWLINE_INJECTION", "message": "CMD may interpret newlines as command separators"})
+    Unsafe cmd.exe characters are rejected during request validation.
+    '''
 
     # Build the quoted string
     result = ['"']
@@ -132,7 +125,7 @@ def quote_cmd(text: str) -> tuple[str, list[dict[str, str]] | None]:
     result.append('\\' * (backslashes * 2))
     result.append('"')
 
-    return ''.join(result), warnings or None
+    return ''.join(result), None
 
 
 def quote_for_shell(text: str, shell: str) -> tuple[str, list[dict[str, str]] | None]:
@@ -170,9 +163,10 @@ def validate_request(data: dict[str, Any]) -> tuple[str, str]:
     2. encoding type and value
     3. text type check
     4. encoding data decode
-    5. NUL character check
+    5. NUL and Unicode scalar checks
     6. input size (decoded, measured in UTF-8 bytes)
     7. shell type and value
+    8. shell-specific safety checks
     """
     # 1. Required fields
     for field in ["shell", "text"]:
@@ -195,29 +189,27 @@ def validate_request(data: dict[str, Any]) -> tuple[str, str]:
     # 4. encoding data decode
     text = decode_text(text, encoding)
 
-    # 5. Check for NUL character
+    # 5. Check for characters that cannot be represented safely
     if "\x00" in text:
         raise SafeShellError(
             "UNQUOTABLE_CHARACTER",
             "text contains NUL character (\\x00) which cannot be safely quoted"
         )
+    try:
+        text_bytes = text.encode('utf-8')
+    except UnicodeEncodeError:
+        raise SafeShellError(
+            'UNQUOTABLE_CHARACTER',
+            'text contains an unpaired Unicode surrogate'
+        ) from None
 
     # 6. input size check (on decoded text, measured in UTF-8 bytes)
-    text_len = len(text)
+    text_len = len(text_bytes)
     if text_len > MAX_INPUT_SIZE:
         raise SafeShellError(
-            "INPUT_TOO_LARGE",
-            f"input exceeds maximum {MAX_INPUT_SIZE} bytes (character count: {text_len})"
+            'INPUT_TOO_LARGE',
+            f'input size {text_len} exceeds maximum {MAX_INPUT_SIZE} bytes'
         )
-    # Only encode if character count is large enough to potentially exceed the byte limit
-    # (worst case: 4 bytes per character in UTF-8). Skip for short inputs.
-    if text_len > MAX_INPUT_SIZE // 4:
-        text_bytes = len(text.encode("utf-8"))
-        if text_bytes > MAX_INPUT_SIZE:
-            raise SafeShellError(
-                "INPUT_TOO_LARGE",
-                f"input size {text_bytes} exceeds maximum {MAX_INPUT_SIZE} bytes"
-            )
 
     # 7. shell validation
     shell = data.get("shell")
@@ -226,6 +218,17 @@ def validate_request(data: dict[str, Any]) -> tuple[str, str]:
 
     if shell not in SUPPORTED_SHELLS:
         raise SafeShellError("UNSUPPORTED_SHELL", f"shell '{shell}' is not supported")
+
+    # 8. cmd.exe has multiple incompatible parsing layers. These
+    # characters cannot be made literal for every command and target parser.
+    if shell == 'cmd':
+        unsafe = sorted(set(text) & CMD_UNQUOTABLE_CHARACTERS)
+        if unsafe:
+            rendered = ', '.join(ascii(char) for char in unsafe)
+            raise SafeShellError(
+                'UNQUOTABLE_CHARACTER',
+                f'cmd cannot safely quote character(s): {rendered}'
+            )
 
     return shell, text
 

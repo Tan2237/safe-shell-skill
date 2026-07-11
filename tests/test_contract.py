@@ -115,6 +115,12 @@ class TestProtocolContract(unittest.TestCase):
         result = run_safe_shell({"shell": "bash", "text": "foo\x00bar"})
         assert result["failureClass"] == "UNQUOTABLE_CHARACTER"
 
+    def test_unpaired_unicode_surrogate_rejected(self):
+        raw = json.dumps({'shell': 'bash', 'text': chr(0xD800)})
+        result = run_safe_shell_raw(raw)
+        assert result['ok'] is False
+        assert result['failureClass'] == 'UNQUOTABLE_CHARACTER'
+
     def test_invalid_field_type_text(self):
         """INVALID_FIELD_TYPE when text is not string."""
         result = run_safe_shell({"shell": "bash", "text": 123})

@@ -20,10 +20,10 @@ safe-shell 只负责把**一个数据参数**正确引用为字面量。
 
 - 单文件 Python 标准库实现，Windows/Linux/macOS 通用。
 - 支持 bash、zsh、fish、PowerShell、CMD、MSYS2 六种 Shell。
-- 自动选择正确的引用规则：bash/zsh/fish/msys2 用单引号转义，PowerShell 用单引号加倍，CMD 用双引号加反斜杠转义。
+- 自动选择引用规则：bash/zsh/fish/msys2 用单引号转义，PowerShell 用单引号加倍；CMD 仅接受可被可靠引用的安全字符子集。
 - 支持 base64 编码输入，避免请求文件本身的引用问题。
 - 结构化 JSON 输出，包含成功/失败状态、错误类型分类。
-- 严格的输入校验：检查必填字段、Shell 类型、输入大小（最大 1 MiB）、NUL 字符。
+- 严格的输入校验：检查必填字段、Shell 类型、UTF-8 合法性、输入大小（最大 1 MiB）、NUL 与 CMD 不可安全引用字符。
 - MSYS2 路径转换警告：提醒用户 MSYS2 可能转换 `/` 开头的路径。
 
 ## 安装
@@ -84,7 +84,7 @@ cat 'foo'\''bar'
 |-------|---------------|---------|
 | bash/zsh/fish | `'` | `'foo'\''bar'`（关闭引号、转义引号、重新打开） |
 | PowerShell | `'` | `'foo''bar'`（单引号加倍） |
-| CMD | `"` `\` | `"foo\"bar"`（反斜杠转义，尾部反斜杠要加倍） |
+| CMD | 安全字符子集 | 双引号包裹；拒绝 U+0022、`%`、`!`、CR、LF |
 
 手动处理容易出错，safe-shell 自动应用正确的规则。
 
@@ -93,7 +93,7 @@ cat 'foo'\''bar'
 `shlex.quote` 只覆盖 POSIX 系 shell（bash/zsh），且不提示各 Shell 的特有陷阱。safe-shell 在此基础上额外提供：
 
 - 跨 Shell 统一接口：bash、zsh、fish、PowerShell、CMD、MSYS2 共用同一套 JSON 协议。
-- Shell 专属警告：MSYS2 路径转换、CMD `%VAR%` 展开、CMD `!VAR!` 延迟展开、CMD 换行注入。
+- Shell 专属处理：提示 MSYS2 路径转换；拒绝 CMD 中无法通用、安全引用的字符。
 - 结构化 JSON 输入输出，便于 Agent 通过文件调用，避免请求本身的引用问题（支持 base64）。
 - 与模型行为解耦的确定性引用，不依赖 LLM 对引用规则的记忆。
 
@@ -178,7 +178,7 @@ python safe_shell.py @request.json
 | Zsh | `zsh` | 单引号转义 |
 | Fish | `fish` | 单引号转义 |
 | PowerShell | `powershell` | 单引号加倍 |
-| CMD | `cmd` | 双引号 + 反斜杠转义 |
+| CMD | `cmd` | 安全字符子集使用双引号；危险字符返回失败 |
 | MSYS2 | `msys2` | 单引号转义 |
 
 ## 错误类型
@@ -192,7 +192,7 @@ python safe_shell.py @request.json
 | `INVALID_FIELD_TYPE` | 字段类型错误 |
 | `INVALID_ENCODING_DATA` | base64 解码失败 |
 | `INPUT_TOO_LARGE` | 输入超过 1 MiB |
-| `UNQUOTABLE_CHARACTER` | 含 NUL 字符 |
+| `UNQUOTABLE_CHARACTER` | 含 NUL、未配对 surrogate 或 CMD 不可安全引用字符 |
 | `INTERNAL_ERROR` | 内部意外错误 |
 
 ## MSYS2 路径警告
@@ -207,9 +207,14 @@ MSYS2 路径转换警告是**启发式**的：
 
 ## CMD 说明
 
-> **CMD 支持是尽力而为。**
->
-> Windows 程序可以自定义参数解析规则。`CommandLineToArgvW` 是约定，不是保证。
+CMD 存在 shell 解析和目标程序参数解析两层规则，没有一种通用转义能可靠覆盖所有字符。为维持“恰好一个字面参数”的承诺，CMD 模式会拒绝以下输入：
+
+- U+0022（双引号）
+- `%`（环境变量展开）
+- `!`（延迟变量展开）
+- CR 和 LF（命令分隔风险）
+
+这些输入返回 `UNQUOTABLE_CHARACTER`，不会返回带警告的成功结果。其余输入仍按 `CommandLineToArgvW` 约定引用；目标程序若使用自定义解析器，仍需单独验证。
 
 ## 限制
 
@@ -220,7 +225,7 @@ MSYS2 路径转换警告是**启发式**的：
 
 ```bash
 python -m py_compile skills/safe-shell/safe_shell.py
-python -m unittest discover -s tests -v
+python -m unittest discover -s . -v
 ```
 
 GitHub Actions 会在 Windows、Linux 上运行测试。

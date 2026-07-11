@@ -1,251 +1,91 @@
-"""Tests for CMD quoting."""
-
+import ast
 import platform
+import subprocess
 import unittest
 
 from .conftest import quote, run_safe_shell
 
 
-def unquote_cmd(quoted: str) -> str:
-    """Unquote a CMD quoted string using CommandLineToArgvW directly.
+def run_through_cmd(text: str) -> str:
+    if platform.system() != 'Windows':
+        raise RuntimeError('cmd.exe integration test requires Windows')
 
-    This is the authoritative test: if CommandLineToArgvW parses our
-    quoted string back to the original, the quoting is correct.
-    Only works on Windows.
-    """
-    if platform.system() != "Windows":
-        raise Exception("unquote_cmd only works on Windows")
-
-    import ctypes
-    from ctypes import wintypes
-
-    # CommandLineToArgvW parses a command line string
-    shell32 = ctypes.windll.shell32
-    CommandLineToArgvW = shell32.CommandLineToArgvW
-    CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
-    CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
-
-    LocalFree = ctypes.windll.kernel32.LocalFree
-    LocalFree.argtypes = [wintypes.HLOCAL]
-    LocalFree.restype = wintypes.HLOCAL
-
-    # Build a fake command line: "python script.py <quoted>"
-    # CommandLineToArgvW expects the full command line
-    cmdline = f'python script.py {quoted}'
-
-    argc = ctypes.c_int()
-    argv = CommandLineToArgvW(cmdline, ctypes.byref(argc))
-
-    if not argv or argc.value < 2:
-        raise Exception("CommandLineToArgvW failed")
-
-    try:
-        # argv[0] is "python", argv[1] is "script.py", argv[2] is our argument
-        if argc.value >= 3:
-            return argv[2]
-        else:
-            raise Exception(f"Not enough arguments: {argc.value}")
-    finally:
-        LocalFree(argv)
+    quoted = quote(text, 'cmd')
+    command = (
+        subprocess.list2cmdline(
+            ['python', '-c', 'import sys;print(repr(sys.argv[1]))']
+        )
+        + ' '
+        + quoted
+    )
+    result = subprocess.run(
+        'cmd.exe /d /c ' + command,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return ast.literal_eval(result.stdout.strip())
 
 
 class TestCmdQuoting(unittest.TestCase):
-    """Tests for CMD quoting correctness.
-
-    Note: CMD quoting is best-effort. Windows programs may implement
-    their own argument parsing rules. These tests verify behavior
-    with standard cmd.exe and CommandLineToArgvW convention.
-    """
-
     def test_simple_text(self):
-        """Simple text is double-quoted."""
-        assert quote("foo", "cmd") == '"foo"'
+        assert quote('foo', 'cmd') == chr(34) + 'foo' + chr(34)
 
     def test_text_with_space(self):
-        """Text with space is double-quoted."""
-        assert quote("foo bar", "cmd") == '"foo bar"'
-
-    def test_text_with_double_quote(self):
-        """Double quote is escaped with backslash."""
-        assert quote('foo"bar', "cmd") == '"foo\\"bar"'
+        assert quote('foo bar', 'cmd') == chr(34) + 'foo bar' + chr(34)
 
     def test_text_with_backslash(self):
-        """Backslash is preserved."""
-        assert quote("foo\\bar", "cmd") == '"foo\\bar"'
-
-    def test_backslash_before_quote(self):
-        """Backslash before quote is doubled."""
-        assert quote('foo\\"bar', "cmd") == '"foo\\\\\\"bar"'
+        assert quote(r'foo\bar', 'cmd') == chr(34) + r'foo\bar' + chr(34)
 
     def test_trailing_backslash(self):
-        """Trailing backslash is doubled."""
-        assert quote("foo\\", "cmd") == '"foo\\\\"'
-
-    def test_text_with_dollar(self):
-        """Dollar sign is preserved."""
-        assert quote("foo$bar", "cmd") == '"foo$bar"'
-
-    def test_text_with_percent(self):
-        """Percent sign is preserved (no variable expansion in double quotes)."""
-        assert quote("foo%bar%", "cmd") == '"foo%bar%"'
-
-    def test_text_with_newline(self):
-        """Newline is preserved."""
-        assert quote("foo\nbar", "cmd") == '"foo\nbar"'
+        assert quote('foo\\', 'cmd') == chr(34) + 'foo\\\\' + chr(34)
 
     def test_empty_string(self):
-        """Empty string produces empty quotes."""
-        assert quote("", "cmd") == '""'
+        assert quote('', 'cmd') == chr(34) * 2
 
-    def test_only_double_quote(self):
-        """Only double quote."""
-        assert quote('"', "cmd") == '"\\""'
+    def test_shell_metacharacters_inside_quotes(self):
+        for text in ['foo&bar', 'foo|bar', 'foo>bar', 'foo<bar', 'foo^bar', '(foo)']:
+            with self.subTest(text=text):
+                assert quote(text, 'cmd') == chr(34) + text + chr(34)
 
-    def test_multiple_double_quotes(self):
-        """Multiple double quotes."""
-        assert quote('a"b"c', "cmd") == '"a\\"b\\"c"'
+    def test_unquotable_characters_are_rejected(self):
+        cases = [
+            'foo' + chr(34) + 'bar',
+            'foo%PATH%',
+            'foo!PATH!',
+            'foo\nbar',
+            'foo\rbar',
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                response = run_safe_shell({'shell': 'cmd', 'text': text})
+                assert response['ok'] is False
+                assert response['failureClass'] == 'UNQUOTABLE_CHARACTER'
 
-    def test_double_backslash_before_quote(self):
-        """Double backslash before quote."""
-        # \\" -> \\\\"
-        assert quote('foo\\\\"bar', "cmd") == '"foo\\\\\\\\\\"bar"'
-
-    @unittest.skipUnless(platform.system() == "Windows", "CommandLineToArgvW only on Windows")
-    def test_roundtrip_simple(self):
-        """Roundtrip: simple text."""
-        text = "Hello World"
-        quoted = quote(text, "cmd")
-        result = unquote_cmd(quoted)
-        assert result == text
-
-    @unittest.skipUnless(platform.system() == "Windows", "CommandLineToArgvW only on Windows")
-    def test_roundtrip_with_quote(self):
-        """Roundtrip: text with double quote."""
-        text = 'foo"bar'
-        quoted = quote(text, "cmd")
-        result = unquote_cmd(quoted)
-        assert result == text
-
-    @unittest.skipUnless(platform.system() == "Windows", "CommandLineToArgvW only on Windows")
-    def test_roundtrip_with_backslash(self):
-        """Roundtrip: text with backslash."""
-        text = "foo\\bar"
-        quoted = quote(text, "cmd")
-        result = unquote_cmd(quoted)
-        assert result == text
-
-    @unittest.skipUnless(platform.system() == "Windows", "CommandLineToArgvW only on Windows")
-    def test_roundtrip_complex(self):
-        """Roundtrip: complex string."""
-        text = 'foo\\bar"baz'
-        quoted = quote(text, "cmd")
-        result = unquote_cmd(quoted)
-        assert result == text
-
-    def test_special_chars_preserved(self):
-        """Special chars preserved in double quotes."""
-        text = "foo&bar"
-        quoted = quote(text, "cmd")
-        assert quoted == '"foo&bar"'
-
-    def test_pipe_preserved(self):
-        """Pipe char preserved."""
-        text = "foo|bar"
-        quoted = quote(text, "cmd")
-        assert quoted == '"foo|bar"'
-
-    def test_redirect_preserved(self):
-        """Redirect chars preserved."""
-        text = "foo>bar"
-        quoted = quote(text, "cmd")
-        assert quoted == '"foo>bar"'
-
-    def test_percent_warning(self):
-        """Arguments containing % get CMD_PERCENT_EXPANSION warning."""
-        response = run_safe_shell({"shell": "cmd", "text": "foo%bar%"})
-        assert response["ok"] is True
-        assert "warnings" in response
-        assert response["warnings"][0]["code"] == "CMD_PERCENT_EXPANSION"
-
-    def test_no_percent_no_warning(self):
-        """Arguments without % produce no warning."""
-        response = run_safe_shell({"shell": "cmd", "text": "foobar"})
-        assert response["ok"] is True
-        assert "warnings" not in response
-
-    def test_exclamation_warning(self):
-        """Arguments containing ! get CMD_DELAYED_EXPANSION warning."""
-        response = run_safe_shell({"shell": "cmd", "text": "foo!PATH!bar"})
-        assert response["ok"] is True
-        assert "warnings" in response
-        assert response["warnings"][0]["code"] == "CMD_DELAYED_EXPANSION"
-
-    def test_no_exclamation_no_delayed_warning(self):
-        """Arguments without ! do not get CMD_DELAYED_EXPANSION warning."""
-        response = run_safe_shell({"shell": "cmd", "text": "foo%bar%"})
-        assert response["ok"] is True
-        codes = [w["code"] for w in response.get("warnings", [])]
-        assert "CMD_DELAYED_EXPANSION" not in codes
-
-    def test_newline_warning(self):
-        """Arguments containing newline get CMD_NEWLINE_INJECTION warning."""
-        response = run_safe_shell({"shell": "cmd", "text": "foo\nbar"})
-        assert response["ok"] is True
-        assert "warnings" in response
-        assert response["warnings"][0]["code"] == "CMD_NEWLINE_INJECTION"
-
-    def test_carriage_return_warning(self):
-        """Arguments containing CR get CMD_NEWLINE_INJECTION warning."""
-        response = run_safe_shell({"shell": "cmd", "text": "foo\rbar"})
-        assert response["ok"] is True
-        assert "warnings" in response
-        assert response["warnings"][0]["code"] == "CMD_NEWLINE_INJECTION"
-
-    def test_percent_and_newline_both_warned(self):
-        """Arguments with both % and newline get both warnings."""
-        response = run_safe_shell({"shell": "cmd", "text": "foo%bar%\nbaz"})
-        assert response["ok"] is True
-        assert "warnings" in response
-        codes = [w["code"] for w in response["warnings"]]
-        assert "CMD_PERCENT_EXPANSION" in codes
-        assert "CMD_NEWLINE_INJECTION" in codes
-
-    def test_crlf_single_warning(self):
-        """CRLF produces only one CMD_NEWLINE_INJECTION warning."""
-        response = run_safe_shell({"shell": "cmd", "text": "foo\r\nbar"})
-        assert response["ok"] is True
-        assert "warnings" in response
-        newline_warnings = [w for w in response["warnings"] if w["code"] == "CMD_NEWLINE_INJECTION"]
-        assert len(newline_warnings) == 1
+    def test_multiple_unquotable_characters_reported_once(self):
+        response = run_safe_shell(
+            {'shell': 'cmd', 'text': chr(34) + '%PATH%!\r\n'}
+        )
+        assert response['ok'] is False
+        assert response['failureClass'] == 'UNQUOTABLE_CHARACTER'
+        assert 'cmd cannot safely quote' in response['message']
 
 
-class TestCmdEdgeCases(unittest.TestCase):
-    """Edge cases for CMD quoting."""
-
-    def test_backslash_at_end(self):
-        """Single backslash at end is doubled."""
-        assert quote("test\\", "cmd") == '"test\\\\"'
-
-    def test_multiple_trailing_backslashes(self):
-        """Multiple trailing backslashes."""
-        # \\\ -> \\\\\\
-        assert quote("test\\\\", "cmd") == '"test\\\\\\\\"'
-
-    @unittest.skipUnless(platform.system() == "Windows", "CommandLineToArgvW only on Windows")
-    def test_backslash_quote_backslash(self):
-        """Backslash-quote-backslash pattern."""
-        text = '\\"\\'
-        quoted = quote(text, "cmd")
-        # Should escape properly
-        result = unquote_cmd(quoted)
-        assert result == text
-
-    @unittest.skipUnless(platform.system() == "Windows", "CommandLineToArgvW only on Windows")
-    def test_unicode_in_cmd(self):
-        """Unicode text works in CMD."""
-        text = "日本語"
-        quoted = quote(text, "cmd")
-        assert quoted == '"日本語"'
-        # Roundtrip with proper encoding
-        result = unquote_cmd(quoted)
-        assert result == text
+class TestCmdIntegration(unittest.TestCase):
+    @unittest.skipUnless(platform.system() == 'Windows', 'cmd.exe only on Windows')
+    def test_safe_arguments_roundtrip_through_cmd_exe(self):
+        cases = [
+            'Hello World',
+            r'foo\bar',
+            'test\\',
+            'foo&bar',
+            'foo|bar',
+            'foo>bar',
+            'foo<bar',
+            'foo^bar',
+            '(foo)',
+            '日本語',
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                assert run_through_cmd(text) == text
