@@ -4,12 +4,15 @@ description: |
   Quote a shell argument for AI agents.
 
   Usage:
-    python safe_shell.py @request.json
+    python "SAFE_SHELL_SCRIPT" @request.json
 
   Request format (JSON):
     {"shell": "bash", "text": "foo'bar"}
 
   Supports: bash, zsh, fish, powershell, cmd, msys2
+
+  Resolve SAFE_SHELL_SCRIPT as the absolute path to safe_shell.py
+  next to this SKILL.md. Never assume it is in the current directory.
 
   MANDATORY: Quotes exactly ONE argument per request. For multiple
   arguments, quote each separately. Do NOT use to quote shell scripts
@@ -21,6 +24,19 @@ description: |
 A JSON-based CLI quoting service for AI agents.
 Quotes a single shell argument using correct quoting conventions.
 CMD has inherent limitations that no quoting can fully overcome — see Warnings.
+
+## Runtime Script Resolution
+
+Before invoking safe-shell, resolve `SAFE_SHELL_SCRIPT` once:
+
+1. Start from the absolute path of this `SKILL.md` supplied by the skill loader.
+2. Set `SAFE_SHELL_SCRIPT` to the sibling file `safe_shell.py` in the same directory.
+3. Convert it to an absolute path and verify that it exists before the first invocation.
+4. Reuse that exact absolute path for every safe-shell command in the current task.
+
+`SAFE_SHELL_SCRIPT` in the examples below is a placeholder for that resolved absolute path. It is not a shell environment variable and must not be passed literally.
+
+Never assume `safe_shell.py` is in the current working directory, never resolve it relative to the request file, and never search the whole filesystem. If the sibling script is missing, **STOP** and report both the resolved `SKILL.md` path and the expected script path.
 
 ## Mandatory
 
@@ -61,7 +77,7 @@ Need pipes, &&, redirections, or backticks?
 echo '{"shell":"bash","text":"foo'\''bar"}' > request.json
 
 # Run safe-shell
-python safe_shell.py @request.json
+python "SAFE_SHELL_SCRIPT" @request.json
 
 # Output
 {"ok":true,"quoted":"'foo'\\''bar'","shell":"bash"}
