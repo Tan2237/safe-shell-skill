@@ -13,7 +13,7 @@ def run_through_cmd(text: str) -> str:
     quoted = quote(text, 'cmd')
     command = (
         subprocess.list2cmdline(
-            ['python', '-c', 'import sys;print(repr(sys.argv[1]))']
+            ['python', '-c', 'import sys;print(ascii(sys.argv[1]))']
         )
         + ' '
         + quoted
