@@ -23,7 +23,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
-      - run: python -m pip install ruff pytest
+      - run: python -m pip install ruff==0.16.0 pytest
       - run: ruff check mcp/ skills/ tests/
       - run: python -m py_compile skills/safe-shell/safe_shell.py mcp/safe_shell_server.py
       - run: python -m pip install .

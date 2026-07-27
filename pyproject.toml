@@ -35,3 +35,6 @@ py-modules = ["safe_shell"]
 [tool.setuptools.packages.find]
 where = ["skills/safe-shell"]
 include = ["safe_shell_mcp*"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
