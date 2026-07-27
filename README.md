@@ -1,123 +1,160 @@
 # safe-shell skill
 
-通用的 Shell 参数引用 Agent Skill。将任意文本稳定转换为恰好一个 Shell 参数，避免 quoting / escaping 错误导致参数被错误拆分、截断或被 Shell 意外解释。
+面向 AI Agent 的单参数 Shell 引用服务。它把一段动态文本转换为目标 Shell
+中“恰好一个字面参数”的源码片段，避免空格、引号、变量展开或反引号导致
+参数被拆分、截断或意外解释。
 
-适合 Agent 拼接 Shell 命令、传递用户输入到命令行、处理含特殊字符（引号、空格、`$`、反引号等）的参数，以及任何不希望被 Shell 静默篡改或注入的场景。
+如果执行接口本身接受 argv 数组，应直接把原始值作为一个数组元素传入，
+不需要 safe-shell。只有必须拼接 Shell 源码字符串时才使用本项目。
 
-## safe-shell 不做什么
+## 这次从 safe-edit 吸收的架构
 
-safe-shell **不**提供以下保证：
+- 新增常驻的结构化 MCP 工具 `safe_shell_quote`，直接接收原始 `shell` 与
+  `text`，无需临时请求文件、Base64 或重复启动 Python。
+- 保留单文件 CLI，并新增 `--request-stdin` 与 `--request-base64` 整体请求
+  传输；原有 `@request.json` 完全兼容。
+- 新增零运行时依赖的 Python 包、稳定的 `safe-shell` / `safe-shell-mcp`
+  命令入口与 Codex 插件清单。
+- 新增 Claude Code、Cursor、OpenCode、VS Code 配置安装器；合并现有 JSON，
+  修改前备份，跨文件失败时回滚已完成写入。
+- 新增 MCP 协议、安装器和三种 CLI 传输的回归测试。
 
-- 不校验命令意图，不阻止破坏性命令
-- 不能让 `eval` 变安全
-- 不能让整段 shell 脚本变安全
-- 不能净化传给 `bash -c` / `sh -c` / `powershell -Command` 的 shell 代码
-- 不处理 shell 语法（管道、`&&`、重定向、反引号）
+没有迁移 safe-edit 特有的文件锁、SHA-256 写入守卫、事务和文本匹配优化；
+这些能力与只读、O(n) 的单参数引用热路径无关。
 
-safe-shell 只负责把**一个数据参数**正确引用为字面量。
+## 能力边界
 
-## 特性
+safe-shell 只负责一个数据参数，不负责：
 
-- 单文件 Python 标准库实现，Windows/Linux/macOS 通用。
-- 支持 bash、zsh、fish、PowerShell、CMD、MSYS2 六种 Shell。
-- 自动选择引用规则：bash/zsh/fish/msys2 用单引号转义，PowerShell 用单引号加倍；CMD 仅接受可被可靠引用的安全字符子集。
-- 支持 base64 编码输入，避免请求文件本身的引用问题。
-- 结构化 JSON 输出，包含成功/失败状态、错误类型分类。
-- 严格的输入校验：检查必填字段、Shell 类型、UTF-8 合法性、输入大小（最大 1 MiB）、NUL 与 CMD 不可安全引用字符。
-- MSYS2 路径转换警告：提醒用户 MSYS2 可能转换 `/` 开头的路径。
+- 校验命令意图或阻止破坏性命令；
+- 让 `eval`、`bash -c`、`sh -c`、`powershell -Command` 变安全；
+- 引用整段脚本、管道、重定向、命令替换或其他 Shell 语法；
+- 替代支持 argv 数组的进程执行 API。
+
+返回值是“一个参数的 Shell 源码片段”，不是可受信任的命令代码。
+
+## 支持范围
+
+- bash、zsh、fish、PowerShell、CMD、MSYS2。
+- bash/zsh/fish/MSYS2 使用单引号分段；PowerShell 使用单引号加倍。
+- CMD 仅接受能维持通用字面量保证的字符子集。
+- 支持 UTF-8、标准或 URL-safe Base64、1 MiB 参数大小限制。
+- MSYS2 对 `/` 或 `=/path` 形式给出路径转换启发式警告。
 
 ## 安装
 
-使用支持 `skills` 生态的安装器：
+### 只安装 Skill / 单文件 CLI
 
 ```bash
 npx skills add Tan2237/safe-shell-skill
-```
-
-全局安装：
-
-```bash
+# 全局安装
 npx skills add Tan2237/safe-shell-skill -g
 ```
 
-指定 Agent：
+这一路径安装 `skills/safe-shell/`，不自动注册常驻 MCP。
+
+### 安装 CLI 与 MCP 命令
+
+项目无运行时第三方依赖：
 
 ```bash
-npx skills add Tan2237/safe-shell-skill -a opencode
-npx skills add Tan2237/safe-shell-skill -a claude-code
+pipx install git+https://github.com/Tan2237/safe-shell-skill.git
+# 或
+uv tool install git+https://github.com/Tan2237/safe-shell-skill.git
 ```
 
-仓库中的 skill 位于：
+安装后提供：
+
+- `safe-shell`：CLI 回退入口；
+- `safe-shell-mcp`：常驻 stdio MCP 服务及跨客户端安装器。
+
+```bash
+safe-shell-mcp --version
+safe-shell-mcp install --client all --scope project --project-dir . --dry-run
+```
+
+仓库还包含 `.codex-plugin/plugin.json` 与 `.mcp.json`，支持插件清单的
+Codex 环境可以同时加载 skill 与常驻 MCP 服务。
+
+## 结构化 MCP 快路径
+
+工具调用：
 
 ```text
-skills/safe-shell/
-  SKILL.md
-  safe_shell.py
+safe_shell_quote({"shell":"bash","text":"foo'bar"})
 ```
 
-## 为什么需要这个工具
+返回的 `structuredContent` 包含：
 
-直接拼接 Shell 命令是危险的：
+```json
+{
+  "ok": true,
+  "quoted": "'foo'\\''bar'",
+  "shell": "bash",
+  "transport": "mcp-structured",
+  "elapsedMs": 0.1
+}
+```
+
+每个动态参数调用一次。把 `quoted` 直接放到最终命令的对应参数位置，不要
+二次包引号，也不要先存入 Shell 变量再期望变量展开重新解析其中的引号。
+
+常驻服务只导入一次引用内核；结构化请求不会再次 JSON 解码，也没有 Base64
+约 33% 的体积膨胀。
+
+## 跨客户端安装器
 
 ```bash
-# 用户输入
-USER_INPUT="foo'bar"
+# 用户级；VS Code 需要 code CLI
+safe-shell-mcp install --client all --scope user
 
-# 错误做法：直接拼接，未引用
-filename=$USER_INPUT
-cat $filename  # word splitting + glob expansion
+# 项目级，适合团队配置
+safe-shell-mcp install --client all --scope project --project-dir .
 
-# 更危险：传入执行上下文
-bash -c "echo $USER_INPUT"  # $USER_INPUT 会被重新解析
-eval "$USER_INPUT"  # 直接执行用户输入
-
-# 正确做法：引用后直接内联到命令中（safe-shell 生成此形式）
-cat 'foo'\''bar'
-
-# 注意：shell 不会重新解析变量展开中的引号
-# QUOTED="'foo'\''bar'"; cat $QUOTED   ← 错误！cat 会去找名为 'foo'\''bar' 的文件
+# 先预览
+safe-shell-mcp install --client cursor --scope user --dry-run --json
 ```
 
-不同 Shell 的引用规则不同：
+| 客户端 | 用户级 | 项目级 |
+|---|---|---|
+| Claude Code | `~/.claude.json` | `.mcp.json` |
+| Cursor | `~/.cursor/mcp.json` | `.cursor/mcp.json` |
+| OpenCode | `~/.config/opencode/opencode.json` | `opencode.json` |
+| VS Code | `code --add-mcp` | `.vscode/mcp.json` |
 
-| Shell | 引号内特殊字符 | 转义方式 |
-|-------|---------------|---------|
-| bash/zsh/fish | `'` | `'foo'\''bar'`（关闭引号、转义引号、重新打开） |
-| PowerShell | `'` | `'foo''bar'`（单引号加倍） |
-| CMD | 安全字符子集 | 双引号包裹；拒绝 U+0022、`%`、`!`、CR、LF |
+安装器只合并 `safe-shell` 条目。修改已有配置前创建 `.safe-shell.bak`
+备份；无效 JSON/JSONC 会被拒绝且保持原文件不变。
 
-手动处理容易出错，safe-shell 自动应用正确的规则。
+## CLI 回退
 
-## 为什么不直接用 shlex.quote
+优先使用执行工具的原生 stdin 字段，把下面的 JSON 作为 stdin 发送：
 
-`shlex.quote` 只覆盖 POSIX 系 shell（bash/zsh），且不提示各 Shell 的特有陷阱。safe-shell 在此基础上额外提供：
+```json
+{"shell":"bash","text":"foo'bar"}
+```
 
-- 跨 Shell 统一接口：bash、zsh、fish、PowerShell、CMD、MSYS2 共用同一套 JSON 协议。
-- Shell 专属处理：提示 MSYS2 路径转换；拒绝 CMD 中无法通用、安全引用的字符。
-- 结构化 JSON 输入输出，便于 Agent 通过文件调用，避免请求本身的引用问题（支持 base64）。
-- 与模型行为解耦的确定性引用，不依赖 LLM 对引用规则的记忆。
-
-## 基本用法
+命令：
 
 ```bash
-# 创建请求文件
-echo '{"shell":"bash","text":"foo'\''bar"}' > request.json
-
-# 运行 safe-shell
-python safe_shell.py @request.json
-
-# 输出
-{"ok":true,"quoted":"'foo'\\''bar'","shell":"bash"}
+python skills/safe-shell/safe_shell.py --request-stdin
 ```
 
-含边界字符的内容使用 base64 编码：
+没有原生 stdin 时，可对整个 UTF-8 JSON 请求做无填充 URL-safe Base64：
 
 ```bash
-echo '{"shell":"bash","encoding":"base64","text":"Zm9vJ2Jhcg=="}' > request.json
-python safe_shell.py @request.json
+python skills/safe-shell/safe_shell.py --request-base64 B64
 ```
 
-## 请求格式
+已有 UTF-8 请求文件继续支持：
+
+```bash
+python skills/safe-shell/safe_shell.py @request.json
+```
+
+不要为了调用工具而用 Shell 重定向临时拼出含动态内容的请求文件；那会把原本
+需要解决的引用问题提前到工具调用之前。
+
+### 请求
 
 ```json
 {
@@ -126,113 +163,65 @@ python safe_shell.py @request.json
 }
 ```
 
-| 字段 | 必填 | 类型 | 说明 |
-|------|------|------|------|
-| `shell` | 是 | string | Shell 类型 |
-| `text` | 是 | string | 待引用文本 |
-| `encoding` | 否 | string | `base64` 先解码 |
+CLI 还接受可选的 `encoding: "base64"`，用于只编码 `text` 字段；标准与
+URL-safe、有填充与无填充形式都接受。结构化 MCP 调用不需要这个字段。
 
-## 响应格式
+### 响应
 
 成功：
 
 ```json
-{
-  "ok": true,
-  "quoted": "'foo'\\''bar'",
-  "shell": "bash"
-}
+{"ok":true,"quoted":"'foo'\\''bar'","shell":"bash"}
 ```
 
 失败：
 
 ```json
-{
-  "ok": false,
-  "failureClass": "UNSUPPORTED_SHELL",
-  "message": "shell 'pwsh' is not supported"
-}
+{"ok":false,"failureClass":"UNSUPPORTED_SHELL","message":"shell 'pwsh' is not supported"}
 ```
 
-带警告（MSYS2 路径转换提醒）：
-
-```json
-{
-  "ok": true,
-  "quoted": "'/usr/local'",
-  "shell": "msys2",
-  "warnings": [
-    {
-      "code": "MSYS2_PATH_CONVERSION",
-      "message": "MSYS2 may convert paths starting with /"
-    }
-  ]
-}
-```
-
-## Shell 类型
+## Shell 规则
 
 | Shell | 枚举值 | 引用方式 |
-|-------|--------|---------|
-| Bash | `bash` | 单引号转义 |
-| Zsh | `zsh` | 单引号转义 |
-| Fish | `fish` | 单引号转义 |
+|---|---|---|
+| Bash | `bash` | 单引号分段 |
+| Zsh | `zsh` | 单引号分段 |
+| Fish | `fish` | 单引号分段 |
 | PowerShell | `powershell` | 单引号加倍 |
-| CMD | `cmd` | 安全字符子集使用双引号；危险字符返回失败 |
-| MSYS2 | `msys2` | 单引号转义 |
+| CMD | `cmd` | 安全字符子集使用双引号 |
+| MSYS2 | `msys2` | 单引号分段并提示路径转换 |
 
-## 错误类型
+CMD 会拒绝 U+0022、`%`、`!`、CR 和 LF。这些字符经过 `cmd.exe` 的 Shell
+层与目标程序参数层时不存在通用、可靠的字面量规则；失败后不要手工绕过。
 
-| failureClass | 含义 |
-|--------------|------|
-| `INVALID_JSON` | JSON 解析失败 |
-| `MISSING_REQUIRED_FIELD` | 缺少必填字段 |
-| `UNSUPPORTED_ENCODING` | encoding 不支持 |
-| `UNSUPPORTED_SHELL` | shell 不在枚举中 |
-| `INVALID_FIELD_TYPE` | 字段类型错误 |
-| `INVALID_ENCODING_DATA` | base64 解码失败 |
-| `INPUT_TOO_LARGE` | 输入超过 1 MiB |
-| `UNQUOTABLE_CHARACTER` | 含 NUL、未配对 surrogate 或 CMD 不可安全引用字符 |
-| `INTERNAL_ERROR` | 内部意外错误 |
+MSYS2 警告只检测前导 `/` 和 `=/path` 形式，不保证覆盖所有路径转换。
 
-## MSYS2 路径警告
+## 错误类型与限制
 
-MSYS2 路径转换警告是**启发式**的：
+错误类型包括 `INVALID_JSON`、`MISSING_REQUIRED_FIELD`、
+`INVALID_FIELD_TYPE`、`UNSUPPORTED_SHELL`、`UNSUPPORTED_ENCODING`、
+`INVALID_ENCODING_DATA`、`INPUT_TOO_LARGE`、`UNQUOTABLE_CHARACTER`、
+`INTERNAL_ERROR`。
 
-- 检测到以 `/` 开头的文本（如 `/usr/bin`），或 `=/路径` 形式的选项值（如 `--mount=/tmp/foo`）时触发
-- 不保证检测到所有会被转换的情况（例如路径出现在参数中间）
-- **无警告不等于安全**
-
-如需精确控制，请查阅 MSYS2 文档了解 Cygwin 路径转换规则。
-
-## CMD 说明
-
-CMD 存在 shell 解析和目标程序参数解析两层规则，没有一种通用转义能可靠覆盖所有字符。为维持“恰好一个字面参数”的承诺，CMD 模式会拒绝以下输入：
-
-- U+0022（双引号）
-- `%`（环境变量展开）
-- `!`（延迟变量展开）
-- CR 和 LF（命令分隔风险）
-
-这些输入返回 `UNQUOTABLE_CHARACTER`，不会返回带警告的成功结果。其余输入仍按 `CommandLineToArgvW` 约定引用；目标程序若使用自定义解析器，仍需单独验证。
-
-## 限制
-
-- **MAX_INPUT_SIZE**: 1 MiB
-- **边界**: 每次请求仅一个参数
+- 参数上限：解码后 1 MiB UTF-8；
+- CLI 请求包上限：4 MiB；
+- 每次请求：恰好一个参数。
 
 ## 测试
 
 ```bash
 python -m py_compile skills/safe-shell/safe_shell.py
-python -m unittest discover -s . -v
+python -m pytest tests/ -v
+ruff check mcp/ skills/ tests/
 ```
 
-GitHub Actions 会在 Windows、Linux 上运行测试。
+GitHub Actions 在 Windows 与 Linux 上验证 CLI、真实 Shell roundtrip、MCP
+协议、包入口和安装器行为。
 
 ## 相关
 
-- [safe-edit](https://github.com/Tan2237/safe-edit-skill) — AI Agent 专用安全文件编辑
+- [safe-edit](https://github.com/Tan2237/safe-edit-skill) — 本次结构化 MCP、
+  打包和安装器设计的来源。
 
 ## 许可证
 

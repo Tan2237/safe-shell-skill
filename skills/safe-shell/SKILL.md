@@ -1,199 +1,165 @@
 ---
 name: safe-shell
 description: |
-  Quote a shell argument for AI agents.
-
-  Usage:
-    python "SAFE_SHELL_SCRIPT" @request.json
-
-  Request format (JSON):
-    {"shell": "bash", "text": "foo'bar"}
-
-  Supports: bash, zsh, fish, powershell, cmd (safe character subset), msys2
-
-  Resolve SAFE_SHELL_SCRIPT as the absolute path to safe_shell.py
-  next to this SKILL.md. Never assume it is in the current directory.
-
-  MANDATORY: Quotes exactly ONE argument per request. For multiple
-  arguments, quote each separately. Do NOT use to quote shell scripts
-  or shell code passed to eval / bash -c / powershell -Command.
+  Quote exactly one dynamic data argument when an agent must compose shell
+  source text for bash, zsh, fish, PowerShell, CMD, or MSYS2. Prefer the
+  structured safe_shell_quote MCP tool when callable; otherwise use the
+  sibling safe_shell.py CLI through stdin, Base64, or an existing request
+  file. Do not use this skill when an execution API accepts an argv array,
+  or to quote scripts, pipelines, redirections, eval input, or command code.
 ---
 
-# safe-shell — Argument Quoting Service
+# safe-shell — One-Argument Quoting
 
-A JSON-based CLI quoting service for AI agents.
-Quotes a single shell argument using correct quoting conventions.
-CMD rejects characters that no general quoting rule can preserve safely — see CMD Rejections.
+Produce a shell source fragment that evaluates to exactly one literal data
+argument. Keep command intent and shell syntax outside this service.
 
-## Runtime Script Resolution
+## Selection
 
-Before invoking safe-shell, resolve `SAFE_SHELL_SCRIPT` once:
+1. If the execution API accepts an argv array, pass the raw argument as one
+   array element. Do not quote it.
+2. If `safe_shell_quote` is callable and shell source text is required, call
+   it with raw structured `shell` and `text` fields.
+3. Otherwise resolve the sibling `safe_shell.py` and use a CLI transport below.
+4. If none of these paths is available, stop instead of quoting manually.
 
-1. Start from the absolute path of this `SKILL.md` supplied by the skill loader.
-2. Set `SAFE_SHELL_SCRIPT` to the sibling file `safe_shell.py` in the same directory.
-3. Convert it to an absolute path and verify that it exists before the first invocation.
-4. Reuse that exact absolute path for every safe-shell command in the current task.
+## Structured MCP Fast Path
 
-`SAFE_SHELL_SCRIPT` in the examples below is a placeholder for that resolved absolute path. It is not a shell environment variable and must not be passed literally.
+Call one tool invocation per dynamic argument:
 
-Never assume `safe_shell.py` is in the current working directory, never resolve it relative to the request file, and never search the whole filesystem. If the sibling script is missing, **STOP** and report both the resolved `SKILL.md` path and the expected script path.
+```text
+safe_shell_quote({"shell":"bash","text":"foo'bar"})
+```
 
-## Mandatory
+Use the returned `quoted` value inline at the exact argument position. The MCP
+path accepts raw text, avoids temporary request files and Base64 expansion, and
+reuses one long-lived Python process.
 
-- **Never manually quote dynamic shell arguments.** Call safe-shell instead.
-- **Quote each dynamic argument separately.** One request = exactly ONE argument.
-- **safe-shell output is a literal data argument**, not shell syntax.
+Do not serialize or Base64-encode an already structured MCP request.
+
+## CLI Fallback Resolution
+
+Resolve `SAFE_SHELL_SCRIPT` once before the first CLI call:
+
+1. Start from the absolute path of this `SKILL.md` supplied by the loader.
+2. Select the sibling `safe_shell.py`.
+3. Convert it to an absolute path and verify that it exists.
+4. Reuse that exact path for the task.
+
+`SAFE_SHELL_SCRIPT` below is a placeholder, not an environment variable. Never
+resolve it from the current directory, target argument, or request file. If the
+sibling script is missing, stop and report both expected paths.
+
+Use CLI transports in this order:
+
+1. Native execution-tool stdin:
+
+   ```text
+   python "SAFE_SHELL_SCRIPT" --request-stdin
+   ```
+
+   Send the JSON request through the execution tool's native stdin field.
+
+2. URL-safe UTF-8 Base64 for the entire JSON envelope:
+
+   ```text
+   python "SAFE_SHELL_SCRIPT" --request-base64 B64
+   ```
+
+3. An existing UTF-8 JSON request file:
+
+   ```text
+   python "SAFE_SHELL_SCRIPT" @request.json
+   ```
+
+Do not create a request file with shell redirection merely to invoke safe-shell.
+Do not put a PowerShell here-string or quoted dynamic payload in the command to
+simulate native stdin; that still relies on the quoting being solved.
+
+## Mandatory Boundary
+
+- Quote exactly one dynamic argument per request.
+- Embed `quoted` directly where one data argument belongs.
+- Treat output as a shell source fragment for one argument, never as trusted
+  executable code.
+- Keep the selected shell equal to the shell that will parse the final command.
+- Treat any `ok: false` response as a hard failure.
 
 ## Forbidden
 
-- Do NOT use safe-shell to quote entire shell scripts or shell code.
-- Do NOT pass safe-shell output as the code operand of `eval`, `bash -c`,
-  `sh -c`, `powershell -Command`, or any "execute this string" facility.
-- Do NOT concatenate safe-shell output where shell syntax (pipes, `&&`, redirections, backticks) is expected.
-- Do NOT re-wrap the quoted output in another quoting layer.
-- Do NOT store the quoted string in a variable and expand it unquoted
-  (e.g. `cat $QUOTED`) — the shell does not re-parse quotes from variable expansion.
+- Do not quote an entire command, script, pipeline, redirection, glob, command
+  substitution, or control operator.
+- Do not pass output as the code operand of `eval`, `bash -c`, `sh -c`,
+  `powershell -Command`, or an equivalent execute-string facility.
+- Do not concatenate output where shell syntax such as `|`, `&&`, `>`, or
+  backticks is expected.
+- Do not wrap the returned fragment in another quoting layer.
+- Do not store the fragment in a shell variable and expand it expecting the
+  shell to parse embedded quotes again.
+- Do not bypass CMD rejection with manual escaping.
 
 ## Decision Tree
 
-```
-Need exactly one dynamic data argument?
-  -> use safe-shell, embed the quoted output inline in the command
+```text
+Execution API accepts argv array?
+  -> pass raw data as one argv element; do not use safe-shell
 
-Need multiple dynamic arguments?
-  -> call safe-shell once per argument; embed each quoted output inline
+Need one dynamic data argument inside shell source text?
+  -> call safe_shell_quote, or the CLI fallback once
 
-Argument is shell code / a script to be executed?
-  -> DO NOT use safe-shell
+Need several dynamic arguments?
+  -> call once per argument and place each result separately
 
-Need pipes, &&, redirections, or backticks?
-  -> that is shell syntax, not a data argument; DO NOT use safe-shell
-```
-
-## Quick Reference
-
-```bash
-# Create request
-echo '{"shell":"bash","text":"foo'\''bar"}' > request.json
-
-# Run safe-shell
-python "SAFE_SHELL_SCRIPT" @request.json
-
-# Output
-{"ok":true,"quoted":"'foo'\\''bar'","shell":"bash"}
+Input is command code or shell syntax?
+  -> do not use safe-shell
 ```
 
-For content with boundary characters, use base64:
+## Request and Response
 
-```bash
-echo '{"shell":"bash","encoding":"base64","text":"Zm9vJ2Jhcg=="}' > request.json
-```
-
-## Request
+Request:
 
 ```json
-{
-  "shell": "bash",
-  "text": "foo'bar"
-}
+{"shell":"bash","text":"foo'bar"}
 ```
 
-## Response
+The optional CLI-only `encoding: "base64"` field decodes the `text` value as
+padded or unpadded standard/URL-safe Base64 before quoting. It is unnecessary
+for structured MCP calls.
 
 Success:
 
 ```json
-{
-  "ok": true,
-  "quoted": "'foo'\\''bar'",
-  "shell": "bash"
-}
+{"ok":true,"quoted":"'foo'\\''bar'","shell":"bash"}
 ```
 
 Failure:
 
 ```json
-{
-  "ok": false,
-  "failureClass": "UNSUPPORTED_SHELL",
-  "message": "shell 'pwsh' is not supported"
-}
+{"ok":false,"failureClass":"UNSUPPORTED_SHELL","message":"shell 'pwsh' is not supported"}
 ```
 
-## Shell Types
+Supported shell enum values: `bash`, `zsh`, `fish`, `powershell`, `cmd`, and
+`msys2`.
 
-| Shell | Enum Value |
-|-------|------------|
-| Bash | `bash` |
-| Zsh | `zsh` |
-| Fish | `fish` |
-| PowerShell | `powershell` |
-| CMD | `cmd` |
-| MSYS2 | `msys2` |
+## Shell-Specific Rules
 
-## Field Reference
-
-| Field | Required | Type | Description |
-|-------|----------|------|-------------|
-| `shell` | Yes | string | Shell type (see above) |
-| `text` | Yes | string | Text to quote, or base64-encoded data when `encoding` is `base64` |
-| `encoding` | No | string | `base64` — the service will decode it before quoting |
+- bash, zsh, fish, MSYS2: single-quote the value and reopen around literal
+  single quotes.
+- PowerShell: single-quote the value and double embedded single quotes.
+- CMD: always double-quote accepted values using the MS C runtime convention.
+  Reject U+0022, `%`, `!`, CR, and LF because no general quoting rule preserves
+  them through all `cmd.exe` parsing layers.
+- MSYS2: inspect the `MSYS2_PATH_CONVERSION` warning for leading `/` or `=/path`
+  patterns. The warning is heuristic; absence of a warning is not a guarantee.
 
 ## Failure Classes
 
-| failureClass | Meaning |
-|--------------|---------|
-| `INVALID_JSON` | Request could not be read or parsed as valid JSON |
-| `MISSING_REQUIRED_FIELD` | Required field missing |
-| `INVALID_FIELD_TYPE` | Field type error (e.g. text is number) |
-| `UNSUPPORTED_SHELL` | shell not in enum |
-| `UNSUPPORTED_ENCODING` | encoding not supported |
-| `INVALID_ENCODING_DATA` | base64 decode failed |
-| `INPUT_TOO_LARGE` | Decoded text > 1 MiB, or request file > 4 MiB |
-| `UNQUOTABLE_CHARACTER` | Contains NUL, an unpaired surrogate, or a CMD-unsafe character |
-| `INTERNAL_ERROR` | Unexpected internal error |
-
-## Warnings
-
-Warnings appear as an extra field in success responses:
-
-```json
-{
-  "ok": true,
-  "quoted": "'/foo'",
-  "shell": "msys2",
-  "warnings": [
-    {
-      "code": "MSYS2_PATH_CONVERSION",
-      "message": "MSYS2 may convert paths starting with /"
-    }
-  ]
-}
-```
-
-> **MSYS2 path warning is heuristic.**
->
-> Detects leading `/` (e.g. `/usr/bin`) and `=/path` option values
-> (e.g. `--mount=/tmp/foo`). Does not guarantee detecting all cases.
-> No warning ≠ safe.
-
-## CMD Rejections
-
-`cmd.exe` applies shell parsing before the target program parses its arguments. No general quoting rule can preserve every character through both layers. To maintain the one-literal-argument guarantee, CMD requests fail with `UNQUOTABLE_CHARACTER` when text contains:
-
-- `U+0022` (double quote)
-- `%` (environment expansion)
-- `!` (delayed expansion)
-- CR or LF (command-separator risk)
-
-Treat this as a hard failure. Do not use the returned message as shell syntax and do not attempt to bypass the rejection with manual escaping.
-
-## CMD Implementation
-
-For accepted input, CMD quoting follows the MS C runtime `CommandLineToArgvW` convention and always wraps the result in double quotes. Target programs may use custom argument parsers, so validate application-specific behavior when exact parsing matters.
+`INVALID_JSON`, `MISSING_REQUIRED_FIELD`, `INVALID_FIELD_TYPE`,
+`UNSUPPORTED_SHELL`, `UNSUPPORTED_ENCODING`, `INVALID_ENCODING_DATA`,
+`INPUT_TOO_LARGE`, `UNQUOTABLE_CHARACTER`, and `INTERNAL_ERROR`.
 
 ## Limits
 
-- **MAX_INPUT_SIZE**: 1 MiB (decoded text)
-- **MAX_FILE_SIZE**: 4 MiB (request file)
-- **Boundary**: Exactly ONE argument per request
+- Decoded argument: 1 MiB of UTF-8.
+- CLI request envelope: 4 MiB.
+- Boundary: exactly one argument per request.

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "safe-shell-mcp"
+version = "1.0.0"
+description = "One-argument shell quoting through a CLI and persistent MCP tool"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+  { name = "Tan2237", email = "tanyu2237@outlook.com" }
+]
+keywords = ["mcp", "shell", "quoting", "agents", "command-line"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent"
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Tan2237/safe-shell-skill"
+Repository = "https://github.com/Tan2237/safe-shell-skill"
+
+[project.scripts]
+safe-shell = "safe_shell_mcp.cli:main"
+safe-shell-mcp = "safe_shell_mcp.server:main"
+
+[tool.setuptools]
+package-dir = { "" = "skills/safe-shell" }
+py-modules = ["safe_shell"]
+
+[tool.setuptools.packages.find]
+where = ["skills/safe-shell"]
+include = ["safe_shell_mcp*"]

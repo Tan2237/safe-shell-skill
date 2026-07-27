@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """safe-shell: A JSON-based CLI quoting service for AI agents.
 
-Usage: safe-shell @request.json
+Usage:
+    safe-shell --request-stdin
+    safe-shell --request-base64 BASE64
+    safe-shell @request.json
 
 Request format (JSON):
 {
     "shell": "bash",
     "text": "foo'bar",
-    "encoding": "base64"  // optional
+    "encoding": "base64"
 }
 
 Response format (JSON):
@@ -140,21 +143,37 @@ def quote_for_shell(text: str, shell: str) -> tuple[str, list[dict[str, str]] | 
         raise SafeShellError("UNSUPPORTED_SHELL", f"shell '{shell}' is not supported")
 
 
+def decode_base64_bytes(text: str) -> bytes:
+    """Decode padded or unpadded standard/URL-safe Base64."""
+    try:
+        encoded = text.encode("ascii")
+    except UnicodeEncodeError as e:
+        raise SafeShellError(
+            "INVALID_ENCODING_DATA", f"base64 decode failed: {e}"
+        ) from e
+    padded = encoded + (b"=" * (-len(encoded) % 4))
+    try:
+        return base64.b64decode(padded, altchars=b"-_", validate=True)
+    except binascii.Error as e:
+        raise SafeShellError(
+            "INVALID_ENCODING_DATA", f"base64 decode failed: {e}"
+        ) from e
+
+
 def decode_text(text: str, encoding: str | None) -> str:
     """Decode text if encoding is specified."""
     if encoding is None or encoding == "":
         return text
-
-    if encoding == "base64":
-        try:
-            decoded = base64.b64decode(text, validate=True)
-            return decoded.decode("utf-8")
-        except (binascii.Error, UnicodeDecodeError) as e:
-            raise SafeShellError("INVALID_ENCODING_DATA", f"base64 decode failed: {e}")
-    else:
-        raise SafeShellError("UNSUPPORTED_ENCODING", f"encoding '{encoding}' is not supported")
-
-
+    if encoding != "base64":
+        raise SafeShellError(
+            "UNSUPPORTED_ENCODING", f"encoding '{encoding}' is not supported"
+        )
+    try:
+        return decode_base64_bytes(text).decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise SafeShellError(
+            "INVALID_ENCODING_DATA", f"base64 decode failed: {e}"
+        ) from e
 def validate_request(data: dict[str, Any]) -> tuple[str, str]:
     """Validate request and return (shell, text).
 
@@ -246,70 +265,90 @@ def process_request(request_data: dict[str, Any]) -> dict[str, Any]:
         return fail("INTERNAL_ERROR", f"unexpected error: {type(e).__name__}")
 
 
+USAGE = (
+    "Usage: safe-shell @request.json | --request-stdin | "
+    "--request-base64 BASE64"
+)
+
+
+def parse_request_bytes(raw_bytes: bytes) -> dict[str, Any]:
+    """Parse one bounded UTF-8 JSON request payload."""
+    if len(raw_bytes) > MAX_FILE_SIZE:
+        raise SafeShellError(
+            "INPUT_TOO_LARGE",
+            f"request payload exceeds maximum {MAX_FILE_SIZE} bytes",
+        )
+    try:
+        raw_content = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise SafeShellError("INVALID_JSON", f"request encoding error: {e}") from e
+    try:
+        request_data = json.loads(raw_content)
+    except json.JSONDecodeError as e:
+        raise SafeShellError("INVALID_JSON", str(e)) from e
+    if not isinstance(request_data, dict):
+        raise SafeShellError("INVALID_JSON", "request must be a JSON object")
+    return request_data
+
+
+def read_request(args: list[str]) -> dict[str, Any] | None:
+    """Read a request from stdin, Base64, or the legacy @file transport."""
+    if args == ["--request-stdin"]:
+        return parse_request_bytes(sys.stdin.buffer.read(MAX_FILE_SIZE + 1))
+
+    if len(args) == 2 and args[0] == "--request-base64":
+        if len(args[1]) > MAX_FILE_SIZE * 2:
+            raise SafeShellError(
+                "INPUT_TOO_LARGE",
+                "encoded request exceeds the bounded command-line transport",
+            )
+        return parse_request_bytes(decode_base64_bytes(args[1]))
+
+    request_files = [arg[1:] for arg in args if arg.startswith("@")]
+    if not request_files:
+        return None
+    if len(request_files) > 1:
+        print(
+            "Warning: multiple @file arguments found, using first one only",
+            file=sys.stderr,
+        )
+    request_file = request_files[0]
+    try:
+        with open(request_file, "rb") as stream:
+            return parse_request_bytes(stream.read(MAX_FILE_SIZE + 1))
+    except FileNotFoundError as e:
+        raise SafeShellError(
+            "INVALID_JSON", f"file not found: {request_file}"
+        ) from e
+    except OSError as e:
+        raise SafeShellError("INVALID_JSON", f"cannot read file: {e}") from e
+
+
+def emit_response(response: dict[str, Any]) -> int:
+    """Write one JSON response and return its process exit code."""
+    print(json.dumps(response, ensure_ascii=False))
+    return 0 if response["ok"] else 1
+
+
 def main(args: list[str] | None = None) -> int:
     """Main entry point."""
     if args is None:
         args = sys.argv[1:]
 
     if not args:
-        print("Usage: safe-shell @request.json", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
         return 1
 
-    # Handle @file syntax
-    request_file = None
-    for arg in args:
-        if arg.startswith("@"):
-            if request_file is not None:
-                print("Warning: multiple @file arguments found, using first one only", file=sys.stderr)
-                break
-            request_file = arg[1:]
-
-    if request_file is None:
-        print("Usage: safe-shell @request.json", file=sys.stderr)
-        return 1
-
-    # Read request file
     try:
-        with open(request_file, "rb") as f:
-            raw_bytes = f.read(MAX_FILE_SIZE + 1)
-            if len(raw_bytes) > MAX_FILE_SIZE:
-                response = fail("INPUT_TOO_LARGE", f"request file exceeds maximum {MAX_FILE_SIZE} bytes")
-                print(json.dumps(response, ensure_ascii=False))
-                return 1
-        try:
-            raw_content = raw_bytes.decode("utf-8")
-        except UnicodeDecodeError as e:
-            response = fail("INVALID_JSON", f"file encoding error: {e}")
-            print(json.dumps(response, ensure_ascii=False))
-            return 1
-    except FileNotFoundError:
-        response = fail("INVALID_JSON", f"file not found: {request_file}")
-        print(json.dumps(response, ensure_ascii=False))
-        return 1
-    except OSError as e:
-        response = fail("INVALID_JSON", f"cannot read file: {e}")
-        print(json.dumps(response, ensure_ascii=False))
+        request_data = read_request(args)
+    except SafeShellError as e:
+        return emit_response(fail(e.failure_class, e.message))
+
+    if request_data is None:
+        print(USAGE, file=sys.stderr)
         return 1
 
-    # Parse JSON
-    try:
-        request_data = json.loads(raw_content)
-    except json.JSONDecodeError as e:
-        response = fail("INVALID_JSON", str(e))
-        print(json.dumps(response, ensure_ascii=False))
-        return 1
-
-    # Validate that we got a dict
-    if not isinstance(request_data, dict):
-        response = fail("INVALID_JSON", "request must be a JSON object")
-        print(json.dumps(response, ensure_ascii=False))
-        return 1
-
-    # Process request
-    response = process_request(request_data)
-    print(json.dumps(response, ensure_ascii=False))
-
-    return 0 if response["ok"] else 1
+    return emit_response(process_request(request_data))
 
 
 if __name__ == "__main__":

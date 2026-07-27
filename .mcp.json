@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "safe-shell": {
+      "command": "python",
+      "args": [
+        "./mcp/safe_shell_server.py"
+      ],
+      "cwd": "."
+    }
+  }
+}
