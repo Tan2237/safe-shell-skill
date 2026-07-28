@@ -65,6 +65,85 @@ class SafeShellMcpTests(unittest.TestCase):
             "UNQUOTABLE_CHARACTER",
         )
 
+    def test_missing_arguments_match_cli_failure_class(self):
+        response = server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "safe_shell_quote"},
+            }
+        )
+        result = response["result"]
+        self.assertTrue(result["isError"])
+        self.assertEqual(
+            result["structuredContent"]["failureClass"],
+            "MISSING_REQUIRED_FIELD",
+        )
+
+    def test_unknown_argument_field_is_invalid_tool_argument(self):
+        response = server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "safe_shell_quote",
+                    "arguments": {"shell": "bash", "text": "x", "extra": 1},
+                },
+            }
+        )
+        result = response["result"]
+        self.assertTrue(result["isError"])
+        self.assertEqual(
+            result["structuredContent"]["failureClass"],
+            "INVALID_TOOL_ARGUMENT",
+        )
+        self.assertEqual(
+            result["structuredContent"]["tool"], "safe_shell_quote"
+        )
+
+    def test_unknown_tool_reports_tool_name(self):
+        response = server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "nope", "arguments": {}},
+            }
+        )
+        result = response["result"]
+        self.assertTrue(result["isError"])
+        self.assertEqual(
+            result["structuredContent"]["failureClass"],
+            "INVALID_TOOL_ARGUMENT",
+        )
+        self.assertEqual(result["structuredContent"]["tool"], "nope")
+
+    def test_unexpected_error_maps_to_internal_error(self):
+        with patch.object(
+            server.core,
+            "process_request",
+            side_effect=RuntimeError("boom"),
+        ):
+            response = server.handle_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "safe_shell_quote",
+                        "arguments": {"shell": "bash", "text": "x"},
+                    },
+                }
+            )
+        result = response["result"]
+        self.assertTrue(result["isError"])
+        self.assertEqual(
+            result["structuredContent"]["failureClass"], "INTERNAL_ERROR"
+        )
+        self.assertNotIn("boom", result["structuredContent"]["message"])
+
     def test_hot_path_skips_json_decode(self):
         with patch.object(
             server.core.json,

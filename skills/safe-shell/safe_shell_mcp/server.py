@@ -29,6 +29,8 @@ class ToolInputError(Exception):
 
 
 def _require_arguments(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
     if not isinstance(value, dict):
         raise ToolInputError("arguments must be an object")
     unknown = sorted(set(value) - {"shell", "text"})
@@ -76,11 +78,18 @@ def _tool_result(summary: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _tool_failure(error: Exception) -> dict[str, Any]:
+def _tool_failure(error: Exception, tool_name: str) -> dict[str, Any]:
+    if isinstance(error, ToolInputError):
+        failure_class = "INVALID_TOOL_ARGUMENT"
+        message = str(error)
+    else:
+        failure_class = "INTERNAL_ERROR"
+        message = f"unexpected error: {type(error).__name__}"
     summary = {
         "ok": False,
-        "failureClass": "INVALID_TOOL_ARGUMENT",
-        "message": str(error),
+        "failureClass": failure_class,
+        "message": message,
+        "tool": tool_name,
         "transport": "mcp-structured",
     }
     return _tool_result(summary)
@@ -182,14 +191,13 @@ def handle_message(message: Any) -> dict[str, Any] | None:
     if method == "tools/list":
         return _rpc_result(request_id, {"tools": TOOLS})
     if method == "tools/call":
+        name = params.get("name", "")
         try:
             result = _tool_result(
-                execute_tool(
-                    params.get("name", ""), params.get("arguments")
-                )
+                execute_tool(name, params.get("arguments"))
             )
         except Exception as error:
-            result = _tool_failure(error)
+            result = _tool_failure(error, name)
         return _rpc_result(request_id, result)
     if method in ("notifications/initialized", "notifications/cancelled"):
         return None
