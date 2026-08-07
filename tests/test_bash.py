@@ -1,24 +1,63 @@
 """Tests for bash quoting."""
 
+import os
 import platform
 import shutil
 import subprocess
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from .conftest import quote, run_safe_shell
 
 
+def run_posix_fragment(
+    executable: str,
+    quoted: str,
+    env=None,
+) -> str:
+    """Parse one quoted fragment with a real POSIX-like shell."""
+    result = subprocess.run(
+        [executable, "-c", f"printf '%s' {quoted}"],
+        capture_output=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr.decode(
+        "utf-8",
+        errors="replace",
+    )
+    return result.stdout.decode("utf-8")
+
+
 def unquote_bash(quoted: str) -> str:
     """Unquote a bash quoted string."""
-    # Use bash to unquote: eval the string and echo it
-    result = subprocess.run(
-        ["bash", "-c", f"printf '%s' {quoted}"],
-        capture_output=True,
-        text=True,
+    return run_posix_fragment("bash", quoted)
+
+
+def find_windows_msys2_bash():
+    """Find a native MSYS2 or Git Bash executable on Windows."""
+    if platform.system() != "Windows":
+        return None
+    program_files = Path(
+        os.environ.get("ProgramFiles", r"C:\Program Files")
     )
-    if result.returncode != 0:
-        raise Exception(f"Unquote failed: {result.stderr}")
-    return result.stdout
+    configured = os.environ.get("SAFE_SHELL_TEST_MSYS2_BASH")
+    candidates = []
+    if configured:
+        candidates.append(Path(configured))
+    candidates.extend([
+        Path(r"C:\msys64\usr\bin\bash.exe"),
+        Path(r"C:\tools\msys64\usr\bin\bash.exe"),
+        program_files / "Git" / "bin" / "bash.exe",
+        program_files / "Git" / "usr" / "bin" / "bash.exe",
+    ])
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+WINDOWS_MSYS2_BASH = find_windows_msys2_bash()
 
 
 class TestBashQuoting(unittest.TestCase):
@@ -147,8 +186,39 @@ class TestZshQuoting(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        if result.returncode == 0:
-            assert result.stdout == text
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == text
+
+
+class TestPosixCompatibilityProfiles(unittest.TestCase):
+    """Tests for sh/dash/ksh and any installed POSIX-like shell."""
+
+    def test_compatibility_profiles_use_single_quote_algorithm(self):
+        for shell in ("sh", "dash", "ksh"):
+            with self.subTest(shell=shell):
+                assert quote("foo'bar", shell) == "'foo'\\''bar'"
+
+    def test_all_available_profiles_roundtrip(self):
+        available = [
+            (shell, executable)
+            for shell in (
+                "bash",
+                "sh",
+                "dash",
+                "ksh",
+                "zsh",
+                "fish",
+            )
+            if (executable := shutil.which(shell))
+        ]
+        if not available:
+            self.skipTest("no POSIX-like shell available")
+
+        text = "line 1\n$HOME ' \" \\ 日本語"
+        for shell, executable in available:
+            with self.subTest(shell=shell):
+                quoted = quote(text, shell)
+                assert run_posix_fragment(executable, quoted) == text
 
 
 class TestFishQuoting(unittest.TestCase):
@@ -165,6 +235,15 @@ class TestFishQuoting(unittest.TestCase):
 
 class TestMsys2Quoting(unittest.TestCase):
     """Tests for msys2 quoting (same algorithm as bash, with warnings)."""
+
+    def test_ci_override_is_preferred(self):
+        configured = str(Path(__file__).resolve())
+        with patch.dict(
+            os.environ,
+            {"SAFE_SHELL_TEST_MSYS2_BASH": configured},
+        ):
+            with patch.object(platform, "system", return_value="Windows"):
+                self.assertEqual(find_windows_msys2_bash(), configured)
 
     def test_simple_text(self):
         """Simple text is single-quoted."""
@@ -205,3 +284,24 @@ class TestMsys2Quoting(unittest.TestCase):
         response = run_safe_shell({"shell": "msys2", "text": "foo/bar"})
         assert response["ok"] is True
         assert "warnings" not in response
+
+    @unittest.skipUnless(
+        WINDOWS_MSYS2_BASH,
+        "MSYS2 or Git Bash not available on Windows",
+    )
+    def test_windows_msys2_fragment_roundtrip(self):
+        """A discovered native bash must parse the MSYS2 fragment exactly."""
+        text = "/tmp/a b'c$HOME\\tail"
+        response = run_safe_shell({"shell": "msys2", "text": text})
+        assert response["ok"] is True
+        assert response["warnings"][0]["code"] == (
+            "MSYS2_PATH_CONVERSION"
+        )
+
+        env = os.environ.copy()
+        env["MSYS2_ARG_CONV_EXCL"] = "*"
+        assert run_posix_fragment(
+            WINDOWS_MSYS2_BASH,
+            response["quoted"],
+            env=env,
+        ) == text

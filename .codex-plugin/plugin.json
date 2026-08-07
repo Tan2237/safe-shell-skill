@@ -1,7 +1,7 @@
 {
   "name": "safe-shell-skill",
   "version": "1.0.0",
-  "description": "Quote exactly one dynamic shell argument through a structured MCP transport or CLI fallback.",
+  "description": "Quote one or an ordered batch of dynamic shell arguments through structured MCP tools or a CLI fallback.",
   "author": {
     "name": "Tan2237",
     "email": "tanyu2237@outlook.com",
@@ -21,8 +21,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "safe-shell",
-    "shortDescription": "Quote one dynamic shell argument safely",
-    "longDescription": "Generate a shell-specific source fragment for exactly one literal data argument through a persistent structured MCP tool, with CLI fallback for bash, zsh, fish, PowerShell, CMD, and MSYS2.",
+    "shortDescription": "Quote dynamic shell arguments safely",
+    "longDescription": "Generate shell-specific source fragments for one or an ordered batch of literal data arguments through persistent structured MCP tools, with CLI fallback for bash, zsh, fish, sh, dash, ksh, PowerShell, pwsh, CMD, and MSYS2.",
     "developerName": "Tan2237",
     "category": "Developer Tools",
     "capabilities": [
@@ -31,6 +31,7 @@
     "websiteURL": "https://github.com/Tan2237/safe-shell-skill",
     "defaultPrompt": [
       "Quote this dynamic argument for the shell command I am composing.",
+      "Quote these ordered dynamic arguments while preserving their boundaries.",
       "Check whether this value can be represented as one CMD argument."
     ],
     "brandColor": "#4F5D95"

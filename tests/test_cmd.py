@@ -3,7 +3,7 @@ import platform
 import subprocess
 import unittest
 
-from .conftest import quote, run_safe_shell
+from .conftest import core, quote, run_safe_shell
 
 
 def run_through_cmd(text: str) -> str:
@@ -39,6 +39,21 @@ class TestCmdQuoting(unittest.TestCase):
 
     def test_trailing_backslash(self):
         assert quote('foo\\', 'cmd') == chr(34) + 'foo\\\\' + chr(34)
+
+    def test_large_accepted_input_uses_trailing_backslash_semantics(self):
+        trailing = "\\" * 4096
+        text = (
+            "x" * (core.MAX_INPUT_SIZE - len(trailing))
+            + trailing
+        )
+        assert quote(text, "cmd") == '"' + text + trailing + '"'
+
+    def test_direct_helper_preserves_double_quote_fallback(self):
+        text = 'a\\"b'
+        quoted, warnings = core.quote_cmd(text)
+        expected = '"a' + ("\\" * 3) + '"b"'
+        assert quoted == expected
+        assert warnings is None
 
     def test_empty_string(self):
         assert quote('', 'cmd') == chr(34) * 2

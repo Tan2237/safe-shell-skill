@@ -4,12 +4,22 @@ These tests verify protocol stability and do not test quoting logic.
 """
 
 import base64
+import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from .conftest import run_safe_shell, run_safe_shell_raw, run_safe_shell_bytes, run_safe_shell_cli, write_request_file
+from .conftest import (
+    core,
+    run_safe_shell,
+    run_safe_shell_bytes,
+    run_safe_shell_cli,
+    run_safe_shell_raw,
+    write_request_file,
+)
 
 
 class TestProtocolContract(unittest.TestCase):
@@ -47,7 +57,7 @@ class TestProtocolContract(unittest.TestCase):
 
     def test_unsupported_shell(self):
         """UNSUPPORTED_SHELL for unknown shell."""
-        result = run_safe_shell({"shell": "pwsh", "text": "foo"})
+        result = run_safe_shell({"shell": "tcsh", "text": "foo"})
         assert result["failureClass"] == "UNSUPPORTED_SHELL"
 
     def test_unsupported_encoding(self):
@@ -139,9 +149,29 @@ class TestProtocolContract(unittest.TestCase):
         assert result["failureClass"] == "INVALID_FIELD_TYPE"
         assert "encoding" in result["message"]
 
+    def test_unknown_fields_are_rejected(self):
+        result = run_safe_shell(
+            {"shell": "bash", "text": "foo", "extra": True}
+        )
+        assert result["ok"] is False
+        assert result["failureClass"] == "UNKNOWN_FIELD"
+        assert "extra" in result["message"]
+
     def test_all_supported_shells(self):
         """All supported shells work."""
-        for shell in ["bash", "zsh", "fish", "powershell", "cmd", "msys2"]:
+        shells = [
+            "bash",
+            "zsh",
+            "fish",
+            "sh",
+            "dash",
+            "ksh",
+            "powershell",
+            "pwsh",
+            "cmd",
+            "msys2",
+        ]
+        for shell in shells:
             result = run_safe_shell({"shell": shell, "text": "foo"})
             assert result["ok"] is True, f"shell {shell} failed"
             assert result["shell"] == shell
@@ -155,8 +185,247 @@ class TestProtocolContract(unittest.TestCase):
         assert "encoding error" in result["message"]
 
 
+class TestBatchProtocolContract(unittest.TestCase):
+    """Tests for the atomic batch envelope."""
+
+    def test_batch_success_structure(self):
+        result = core.process_batch_request(
+            {"shell": "bash", "texts": ["one", "a'b"]}
+        )
+        assert result == {
+            "ok": True,
+            "shell": "bash",
+            "count": 2,
+            "quoted": ["'one'", "'a'\\''b'"],
+        }
+
+    def test_batch_item_count_bounds(self):
+        empty = run_safe_shell({"shell": "bash", "texts": []})
+        assert empty["failureClass"] == "INVALID_FIELD_VALUE"
+
+        at_limit = run_safe_shell(
+            {"shell": "bash", "texts": ["x"] * 256}
+        )
+        assert at_limit["ok"] is True
+        assert at_limit["count"] == 256
+
+        too_many = run_safe_shell(
+            {"shell": "bash", "texts": ["x"] * 257}
+        )
+        assert too_many["failureClass"] == "INVALID_FIELD_VALUE"
+
+    def test_batch_rejects_wrong_types_and_extra_fields(self):
+        wrong_container = run_safe_shell(
+            {"shell": "bash", "texts": "not-an-array"}
+        )
+        assert wrong_container["failureClass"] == "INVALID_FIELD_TYPE"
+
+        wrong_item = run_safe_shell(
+            {"shell": "bash", "texts": ["ok", 3]}
+        )
+        assert wrong_item["failureClass"] == "INVALID_FIELD_TYPE"
+        assert wrong_item["index"] == 1
+
+        extra = run_safe_shell(
+            {
+                "shell": "bash",
+                "texts": ["x"],
+                "encoding": "base64",
+            }
+        )
+        assert extra["failureClass"] == "UNKNOWN_FIELD"
+
+        mixed = run_safe_shell(
+            {"shell": "bash", "text": "one", "texts": ["two"]}
+        )
+        assert mixed["failureClass"] == "UNKNOWN_FIELD"
+
+    def test_batch_aggregate_utf8_limit(self):
+        half = 512 * 1024
+        at_limit = run_safe_shell(
+            {
+                "shell": "bash",
+                "texts": [
+                    "x" * half,
+                    ("你" * (half // 3)) + "yy",
+                ],
+            }
+        )
+        assert at_limit["ok"] is True
+
+        over_limit = run_safe_shell(
+            {
+                "shell": "bash",
+                "texts": ["x" * half, "y" * (half + 1)],
+            }
+        )
+        assert over_limit["failureClass"] == "INPUT_TOO_LARGE"
+        assert over_limit["index"] == 1
+        assert "quoted" not in over_limit
+
+    def test_batch_first_item_failure_has_index_and_no_partial_output(self):
+        result = run_safe_shell(
+            {"shell": "cmd", "texts": ["safe", "bad%value", "later"]}
+        )
+        assert result["failureClass"] == "UNQUOTABLE_CHARACTER"
+        assert result["index"] == 1
+        assert "quoted" not in result
+
+        earliest = run_safe_shell(
+            {"shell": "cmd", "texts": ["bad%value", 3]}
+        )
+        assert earliest["failureClass"] == "UNQUOTABLE_CHARACTER"
+        assert earliest["index"] == 0
+        assert "quoted" not in earliest
+
+        nul = run_safe_shell(
+            {"shell": "bash", "texts": ["safe", "bad\x00value"]}
+        )
+        assert nul["failureClass"] == "UNQUOTABLE_CHARACTER"
+        assert nul["index"] == 1
+        assert "quoted" not in nul
+
+    def test_batch_powershell_legacy_native_failure_has_index(self):
+        result = run_safe_shell(
+            {
+                "shell": "powershell",
+                "texts": ["safe", "path with space\\", "later"],
+            }
+        )
+        assert result["failureClass"] == "UNQUOTABLE_CHARACTER"
+        assert result["index"] == 1
+        assert "quoted" not in result
+
+        pwsh = run_safe_shell(
+            {
+                "shell": "pwsh",
+                "texts": ["", 'a"b', "path with space\\"],
+            }
+        )
+        assert pwsh["ok"] is True
+        assert pwsh["count"] == 3
+
+    def test_batch_msys2_warnings_include_indexes(self):
+        result = run_safe_shell(
+            {
+                "shell": "msys2",
+                "texts": ["normal", "/tmp/a", "--mount=/work"],
+            }
+        )
+        assert result["ok"] is True
+        assert [warning["index"] for warning in result["warnings"]] == [
+            1,
+            2,
+        ]
+
+
 class TestCLIContract(unittest.TestCase):
     """Tests for main() CLI entry point behavior."""
+
+    def test_emit_response_bypasses_legacy_text_encoding(self):
+        response = {
+            "ok": True,
+            "quoted": "'emoji-🙂-中文'",
+            "shell": "bash",
+        }
+        expected = (
+            json.dumps(response, ensure_ascii=False) + "\n"
+        ).encode("utf-8")
+        raw_stdout = io.BytesIO()
+        legacy_stdout = io.TextIOWrapper(
+            raw_stdout,
+            encoding="cp1252",
+        )
+
+        with patch.object(sys, "stdout", legacy_stdout):
+            assert core.emit_response(response) == 0
+
+        assert raw_stdout.getvalue() == expected
+        legacy_stdout.detach()
+
+    def test_emit_response_supports_stringio(self):
+        response = {
+            "ok": False,
+            "failureClass": "EXAMPLE",
+            "message": "emoji-🙂-中文",
+        }
+        stream = io.StringIO()
+
+        with patch.object(sys, "stdout", stream):
+            assert core.emit_response(response) == 1
+
+        assert stream.getvalue() == (
+            json.dumps(response, ensure_ascii=False) + "\n"
+        )
+
+    def test_cli_stdout_is_utf8_without_pythonioencoding(self):
+        request = {
+            "shell": "bash",
+            "text": "emoji-🙂-中文",
+        }
+        payload = json.dumps(
+            request,
+            ensure_ascii=False,
+        ).encode("utf-8")
+        proc = run_safe_shell_cli(["--request-stdin"], payload)
+
+        assert proc.returncode == 0, proc.stderr
+        response = core.process_envelope(request)
+        expected = (
+            json.dumps(response, ensure_ascii=False) + "\n"
+        ).encode("utf-8")
+        assert proc.stdout == expected
+
+    def test_cli_escapes_unpaired_surrogate_in_error_response(self):
+        request = {"shell": "invalid\ud800", "text": "x"}
+        payload = json.dumps(request).encode("utf-8")
+        proc = run_safe_shell_cli(["--request-stdin"], payload)
+
+        assert proc.returncode == 1, proc.stderr
+        assert b"\\ud800" in proc.stdout
+        response = json.loads(proc.stdout.decode("utf-8"))
+        assert response["failureClass"] == "UNSUPPORTED_SHELL"
+
+    def test_cli_rejects_non_json_numbers_across_transports(self):
+        constants = (
+            ("NaN", float("nan")),
+            ("Infinity", float("inf")),
+            ("-Infinity", float("-inf")),
+        )
+        for constant, value in constants:
+            request = {"shell": value, "text": "x"}
+            payload = json.dumps(
+                request,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            encoded = (
+                base64.urlsafe_b64encode(payload).decode().rstrip("=")
+            )
+            path = write_request_file(request)
+            try:
+                transports = (
+                    ("stdin", ["--request-stdin"], payload),
+                    (
+                        "base64",
+                        ["--request-base64", encoded],
+                        None,
+                    ),
+                    ("file", [f"@{path}"], None),
+                )
+                for transport, args, input_bytes in transports:
+                    with self.subTest(
+                        constant=constant,
+                        transport=transport,
+                    ):
+                        proc = run_safe_shell_cli(args, input_bytes)
+                        assert proc.returncode == 1, proc.stderr
+                        response = json.loads(
+                            proc.stdout.decode("utf-8")
+                        )
+                        assert response["failureClass"] == "INVALID_JSON"
+                        assert constant in response["message"]
+            finally:
+                Path(path).unlink(missing_ok=True)
 
     def test_no_args_returns_1(self):
         """No arguments prints usage to stderr and returns 1."""
@@ -230,17 +499,80 @@ class TestCLIContract(unittest.TestCase):
         finally:
             Path(path).unlink(missing_ok=True)
 
-    def test_multiple_at_file_uses_first(self):
-        """Multiple @file args uses first one and prints warning to stderr."""
-        path1 = write_request_file({"shell": "bash", "text": "first"})
-        path2 = write_request_file({"shell": "bash", "text": "second"})
+    def test_cli_rejects_unknown_request_fields(self):
+        path = write_request_file(
+            {"shell": "bash", "text": "hello", "extra": True}
+        )
         try:
-            proc = run_safe_shell_cli([f"@{path1}", f"@{path2}"])
-            assert proc.returncode == 0
+            proc = run_safe_shell_cli([f"@{path}"])
+            assert proc.returncode == 1
             response = json.loads(proc.stdout.decode("utf-8"))
-            assert response["ok"] is True
-            assert response["quoted"] == "'first'"
-            assert b"Warning" in proc.stderr
+            assert response["failureClass"] == "UNKNOWN_FIELD"
+            assert "extra" in response["message"]
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_batch_dispatches_across_all_cli_transports(self):
+        request = {"shell": "bash", "texts": ["one", "two"]}
+        payload = json.dumps(request).encode("utf-8")
+        encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+        path = write_request_file(request)
+        try:
+            cases = [
+                (["--request-stdin"], payload),
+                (["--request-base64", encoded], None),
+                ([f"@{path}"], None),
+            ]
+            for args, input_bytes in cases:
+                with self.subTest(args=args):
+                    proc = run_safe_shell_cli(args, input_bytes)
+                    assert proc.returncode == 0, proc.stderr
+                    response = json.loads(
+                        proc.stdout.decode("utf-8")
+                    )
+                    assert response["count"] == 2
+                    assert response["quoted"] == ["'one'", "'two'"]
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_mixed_and_extra_transport_arguments_are_rejected(self):
+        payload = json.dumps(
+            {"shell": "bash", "text": "stdin"}
+        ).encode("utf-8")
+        encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+        path1 = write_request_file(
+            {"shell": "bash", "text": "first"}
+        )
+        path2 = write_request_file(
+            {"shell": "bash", "text": "second"}
+        )
+        try:
+            cases = [
+                (["--request-stdin", "extra"], payload),
+                (["--request-base64", encoded, "extra"], None),
+                ([f"@{path1}", f"@{path2}"], None),
+                ([f"@{path1}", "--request-stdin"], payload),
+            ]
+            for args, input_bytes in cases:
+                with self.subTest(args=args):
+                    proc = run_safe_shell_cli(args, input_bytes)
+                    assert proc.returncode == 1
+                    assert proc.stdout == b""
+                    assert b"Usage" in proc.stderr
         finally:
             Path(path1).unlink(missing_ok=True)
             Path(path2).unlink(missing_ok=True)
+
+    def test_deep_json_recursion_is_structured_invalid_json(self):
+        payload = (
+            b'{"shell":"bash","text":"x","extra":'
+            + (b"[" * 10000)
+            + b"0"
+            + (b"]" * 10000)
+            + b"}"
+        )
+        proc = run_safe_shell_cli(["--request-stdin"], payload)
+        assert proc.returncode == 1
+        response = json.loads(proc.stdout.decode("utf-8"))
+        assert response["failureClass"] == "INVALID_JSON"
+        assert b"Traceback" not in proc.stderr

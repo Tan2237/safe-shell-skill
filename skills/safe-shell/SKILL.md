@@ -1,41 +1,66 @@
 ---
 name: safe-shell
 description: |
-  Quote exactly one dynamic data argument when an agent must compose shell
-  source text for bash, zsh, fish, PowerShell, CMD, or MSYS2. Prefer the
-  structured safe_shell_quote MCP tool when callable; otherwise use the
-  sibling safe_shell.py CLI through stdin, Base64, or an existing request
-  file. Do not use this skill when an execution API accepts an argv array,
-  or to quote scripts, pipelines, redirections, eval input, or command code.
+  Quote one or an ordered batch of dynamic data arguments when an agent must
+  compose shell source text for bash, zsh, fish, sh, dash, ksh, PowerShell,
+  pwsh, CMD, or MSYS2. Prefer argv arrays, then the structured
+  safe_shell_quote / safe_shell_quote_many MCP tools, then the sibling
+  safe_shell.py CLI. Never use this skill for command code or shell syntax.
 ---
 
-# safe-shell — One-Argument Quoting
+# safe-shell — Literal Data Arguments
 
-Produce a shell source fragment that evaluates to exactly one literal data
+Produce shell source fragments that each evaluate to exactly one literal data
 argument. Keep command intent and shell syntax outside this service.
 
 ## Selection
 
-1. If the execution API accepts an argv array, pass the raw argument as one
+1. If the execution API accepts an argv array, pass every raw value as one
    array element. Do not quote it.
-2. If `safe_shell_quote` is callable and shell source text is required, call
-   it with raw structured `shell` and `text` fields.
-3. Otherwise resolve the sibling `safe_shell.py` and use a CLI transport below.
+2. If shell source is required and the MCP tools are callable:
+   - call `safe_shell_quote` for one value;
+   - call `safe_shell_quote_many` for 1..256 ordered values.
+3. Otherwise resolve the sibling `safe_shell.py` and use a CLI transport.
 4. If none of these paths is available, stop instead of quoting manually.
+
+The `shell` enum must equal the parser that will consume the final command. It
+does not select or launch a shell. Select `pwsh` only for PowerShell 7.3+ when
+native argv fidelity relies on `Standard` mode (or non-legacy `Windows` mode).
 
 ## Structured MCP Fast Path
 
-Call one tool invocation per dynamic argument:
+One argument:
 
 ```text
 safe_shell_quote({"shell":"bash","text":"foo'bar"})
 ```
 
-Use the returned `quoted` value inline at the exact argument position. The MCP
-path accepts raw text, avoids temporary request files and Base64 expansion, and
-reuses one long-lived Python process.
+Several independent arguments:
 
-Do not serialize or Base64-encode an already structured MCP request.
+```text
+safe_shell_quote_many({
+  "shell": "bash",
+  "texts": ["first", "two words", "foo'bar"]
+})
+```
+
+For a successful batch, place `quoted[0]`, `quoted[1]`, and so on at their
+separate argument positions. Never join the array into one quoted value or
+treat it as command code.
+
+Batch requests are atomic: `texts` must contain 1..256 strings whose combined
+UTF-8 size is at most 1 MiB. If any item fails, the response has `ok: false`
+and a zero-based `index`; it contains no partial `quoted` array. MSYS2 batch
+warnings also include the affected `index`.
+
+Use raw structured fields. Do not JSON-serialize or Base64-encode an MCP
+request. TextContent mirrors the serialized JSON for compatibility, while
+`structuredContent` carries the typed result.
+
+The server supports modern MCP `2026-07-28` discovery and per-request metadata,
+plus legacy initialize negotiation through `2025-11-25`, `2025-06-18`,
+`2025-03-26`, and `2024-11-05`. This protocol detail does not change how the
+quote tools are called.
 
 ## CLI Fallback Resolution
 
@@ -58,13 +83,17 @@ Use CLI transports in this order:
    python "SAFE_SHELL_SCRIPT" --request-stdin
    ```
 
-   Send the JSON request through the execution tool's native stdin field.
+   Send one UTF-8 JSON envelope through the execution tool's native stdin
+   field.
 
-2. URL-safe UTF-8 Base64 for the entire JSON envelope:
+2. For a small request only, URL-safe UTF-8 Base64 for the entire envelope:
 
    ```text
    python "SAFE_SHELL_SCRIPT" --request-base64 B64
    ```
+
+   Base64 is subject to argv limits, especially the Windows process command
+   line. It cannot carry inputs near the service's 1 MiB data limit.
 
 3. An existing UTF-8 JSON request file:
 
@@ -72,94 +101,132 @@ Use CLI transports in this order:
    python "SAFE_SHELL_SCRIPT" @request.json
    ```
 
-Do not create a request file with shell redirection merely to invoke safe-shell.
-Do not put a PowerShell here-string or quoted dynamic payload in the command to
-simulate native stdin; that still relies on the quoting being solved.
+Do not create a request file with shell redirection merely to invoke
+safe-shell. Do not put a PowerShell here-string or quoted dynamic payload in
+the command to simulate native stdin.
+
+The same CLI entry automatically dispatches single envelopes containing
+`text` and batch envelopes containing `texts`. Only single requests accept the
+optional `encoding: "base64"` field; batch requests require raw strings. CLI
+stdout is always one UTF-8 JSON line, independent of the console code page and
+`PYTHONIOENCODING`.
 
 ## Mandatory Boundary
 
-- Quote exactly one dynamic argument per request.
-- Embed `quoted` directly where one data argument belongs.
-- Treat output as a shell source fragment for one argument, never as trusted
-  executable code.
-- Keep the selected shell equal to the shell that will parse the final command.
-- Treat any `ok: false` response as a hard failure.
+- Quote one dynamic argument, or one ordered batch of independent arguments.
+- Embed each returned fragment exactly where one data argument belongs.
+- Treat output as shell source fragments, never as trusted executable code.
+- Keep the selected shell equal to the final parser.
+- Treat every `ok: false` response as a hard failure.
+- For batch failures, do not use or invent results for any item.
 
 ## Forbidden
 
 - Do not quote an entire command, script, pipeline, redirection, glob, command
   substitution, or control operator.
-- Do not pass output as the code operand of `eval`, `bash -c`, `sh -c`,
+- Do not use output as the code operand of `eval`, `bash -c`, `sh -c`,
   `powershell -Command`, or an equivalent execute-string facility.
-- Do not concatenate output where shell syntax such as `|`, `&&`, `>`, or
-  backticks is expected.
-- Do not wrap the returned fragment in another quoting layer.
-- Do not store the fragment in a shell variable and expand it expecting the
-  shell to parse embedded quotes again.
+- Do not concatenate output where `|`, `&&`, `>`, or backticks are expected.
+- Do not wrap returned fragments in another quoting layer.
+- Do not normalize, substitute, or collapse Unicode quote characters in a
+  returned fragment.
+- Do not store fragments in a shell variable and expand it expecting the shell
+  to parse embedded quotes again.
 - Do not bypass CMD rejection with manual escaping.
+- Do not bypass a `powershell` legacy-native rejection by adding quotes or
+  backslashes. Use a raw argv API, or the actual `pwsh` 7.3+ parser.
 
 ## Decision Tree
 
 ```text
 Execution API accepts argv array?
-  -> pass raw data as one argv element; do not use safe-shell
+  -> pass raw values as separate argv elements; do not use safe-shell
 
-Need one dynamic data argument inside shell source text?
-  -> call safe_shell_quote, or the CLI fallback once
+Need one dynamic data argument inside shell source?
+  -> safe_shell_quote, or one CLI request
 
-Need several dynamic arguments?
-  -> call once per argument and place each result separately
+Need 2..256 dynamic data arguments for the same shell?
+  -> safe_shell_quote_many, or one batch CLI request
+  -> place returned elements separately and in order
 
 Input is command code or shell syntax?
   -> do not use safe-shell
 ```
 
-## Request and Response
+## Requests and Responses
 
-Request:
+Single request:
 
 ```json
 {"shell":"bash","text":"foo'bar"}
 ```
 
-The optional CLI-only `encoding: "base64"` field decodes the `text` value as
-padded or unpadded standard/URL-safe Base64 before quoting. It is unnecessary
-for structured MCP calls.
-
-Success:
+Single success:
 
 ```json
 {"ok":true,"quoted":"'foo'\\''bar'","shell":"bash"}
 ```
 
-Failure:
+Batch request:
 
 ```json
-{"ok":false,"failureClass":"UNSUPPORTED_SHELL","message":"shell 'pwsh' is not supported"}
+{"shell":"pwsh","texts":["one","two words","$env:HOME"]}
 ```
 
-Supported shell enum values: `bash`, `zsh`, `fish`, `powershell`, `cmd`, and
-`msys2`.
+Batch success:
+
+```json
+{
+  "ok": true,
+  "shell": "pwsh",
+  "count": 3,
+  "quoted": ["'one'", "'two words'", "'$env:HOME'"]
+}
+```
+
+Batch failure:
+
+```json
+{
+  "ok": false,
+  "failureClass": "UNQUOTABLE_CHARACTER",
+  "message": "cmd cannot safely quote character(s): '%'",
+  "index": 1
+}
+```
+
+Supported shell enum values: `bash`, `zsh`, `fish`, `sh`, `dash`, `ksh`,
+`powershell`, `pwsh`, `cmd`, and `msys2`.
 
 ## Shell-Specific Rules
 
-- bash, zsh, fish, MSYS2: single-quote the value and reopen around literal
-  single quotes.
-- PowerShell: single-quote the value and double embedded single quotes.
-- CMD: always double-quote accepted values using the MS C runtime convention.
-  Reject U+0022, `%`, `!`, CR, and LF because no general quoting rule preserves
-  them through all `cmd.exe` parsing layers.
-- MSYS2: inspect the `MSYS2_PATH_CONVERSION` warning for leading `/` or `=/path`
-  patterns. The warning is heuristic; absence of a warning is not a guarantee.
+- bash, zsh, fish, sh, dash, ksh, and MSYS2: single-quote the value and
+  reopen around literal single quotes.
+- PowerShell and pwsh: wrap the value in ASCII U+0027. Double every
+  embedded U+0027, U+2018, U+2019, U+201A, or U+201B using that same code
+  point, because PowerShell treats all five as single-quote delimiters. Keep
+  other quote lookalikes literal; do not normalize or substitute them.
+- `powershell`: reject the empty string, any value containing U+0022, and any
+  value that both contains Unicode whitespace and ends in a backslash. Windows
+  PowerShell legacy native argument passing cannot preserve those values.
+- `pwsh`: exact native argv for those values requires PowerShell 7.3+
+  `Standard` mode or a `Windows`-mode target that does not fall back to legacy.
+- CMD: double-quote accepted values using the MS C runtime convention. Reject
+  U+0022, `%`, `!`, CR, and LF.
+- MSYS2: inspect `MSYS2_PATH_CONVERSION` warnings for leading `/` or `=/path`.
+  Warning absence is not a guarantee that conversion will not occur.
 
 ## Failure Classes
 
-`INVALID_JSON`, `MISSING_REQUIRED_FIELD`, `INVALID_FIELD_TYPE`,
-`UNSUPPORTED_SHELL`, `UNSUPPORTED_ENCODING`, `INVALID_ENCODING_DATA`,
-`INPUT_TOO_LARGE`, `UNQUOTABLE_CHARACTER`, and `INTERNAL_ERROR`.
+`INVALID_JSON`, `MISSING_REQUIRED_FIELD`, `UNKNOWN_FIELD`,
+`INVALID_FIELD_TYPE`, `INVALID_FIELD_VALUE`, `UNSUPPORTED_SHELL`,
+`UNSUPPORTED_ENCODING`, `INVALID_ENCODING_DATA`, `INPUT_TOO_LARGE`,
+`UNQUOTABLE_CHARACTER`, and `INTERNAL_ERROR`.
 
 ## Limits
 
-- Decoded argument: 1 MiB of UTF-8.
+- Single decoded argument: 1 MiB of UTF-8.
+- Batch: 1..256 strings, combined UTF-8 size at most 1 MiB.
 - CLI request envelope: 4 MiB.
-- Boundary: exactly one argument per request.
+- Base64 command-line transport: only small requests; platform argv limits
+  apply before safe-shell starts.
