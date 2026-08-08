@@ -32,6 +32,7 @@ from typing import Any
 MAX_INPUT_SIZE = 1024 * 1024  # 1 MiB
 MAX_FILE_SIZE = 4 * 1024 * 1024  # 4 MiB
 MAX_BATCH_ITEMS = 256
+MAX_JSON_DEPTH = 100
 
 POSIX_SHELLS = frozenset(
     ["bash", "zsh", "fish", "msys2", "sh", "dash", "ksh"]
@@ -493,6 +494,39 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-JSON numeric constant: {value}")
 
 
+def _enforce_json_depth(text: str) -> None:
+    """Reject JSON nested deeper than MAX_JSON_DEPTH.
+
+    json.loads relies on the interpreter recursion limit, whose effective
+    depth varies by platform and Python version, so enforce a fixed,
+    platform-independent bound before parsing.
+    """
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                raise SafeShellError(
+                    "INVALID_JSON",
+                    f"request JSON nesting exceeds maximum depth "
+                    f"{MAX_JSON_DEPTH}",
+                )
+        elif char in "]}":
+            depth -= 1
+
+
 def parse_request_bytes(raw_bytes: bytes) -> dict[str, Any]:
     """Parse one bounded UTF-8 JSON request payload."""
     if len(raw_bytes) > MAX_FILE_SIZE:
@@ -504,6 +538,7 @@ def parse_request_bytes(raw_bytes: bytes) -> dict[str, Any]:
         raw_content = raw_bytes.decode("utf-8")
     except UnicodeDecodeError as e:
         raise SafeShellError("INVALID_JSON", f"request encoding error: {e}") from e
+    _enforce_json_depth(raw_content)
     try:
         request_data = json.loads(
             raw_content,

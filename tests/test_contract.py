@@ -576,3 +576,26 @@ class TestCLIContract(unittest.TestCase):
         response = json.loads(proc.stdout.decode("utf-8"))
         assert response["failureClass"] == "INVALID_JSON"
         assert b"Traceback" not in proc.stderr
+
+    def test_json_depth_within_limit_still_parses(self):
+        payload = (
+            b'{"shell":"bash","text":"x","extra":'
+            + (b"[" * 50)
+            + b"0"
+            + (b"]" * 50)
+            + b"}"
+        )
+        proc = run_safe_shell_cli(["--request-stdin"], payload)
+        assert proc.returncode == 1
+        response = json.loads(proc.stdout.decode("utf-8"))
+        assert response["failureClass"] == "UNKNOWN_FIELD"
+
+    def test_brackets_inside_strings_do_not_count_toward_depth(self):
+        text = "[" * 200 + "\\" + "]" * 200
+        payload = json.dumps(
+            {"shell": "bash", "text": "x", "extra": text}
+        ).encode("utf-8")
+        proc = run_safe_shell_cli(["--request-stdin"], payload)
+        assert proc.returncode == 1
+        response = json.loads(proc.stdout.decode("utf-8"))
+        assert response["failureClass"] == "UNKNOWN_FIELD"
