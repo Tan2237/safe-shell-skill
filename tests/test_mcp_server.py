@@ -661,7 +661,7 @@ class SafeShellMcpStdioTests(unittest.TestCase):
             encoding="utf-8",
             check=True,
         )
-        self.assertEqual(completed.stdout.strip(), "1.0.0")
+        self.assertEqual(completed.stdout.strip(), "1.0.1")
 
         from safe_shell_mcp import installer
 

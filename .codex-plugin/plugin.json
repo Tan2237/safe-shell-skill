@@ -1,6 +1,6 @@
 {
   "name": "safe-shell-skill",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Quote one or an ordered batch of dynamic shell arguments through structured MCP tools or a CLI fallback.",
   "author": {
     "name": "Tan2237",
