@@ -20,8 +20,15 @@ argument. Keep command intent and shell syntax outside this service.
 2. If shell source is required and the MCP tools are callable:
    - call `safe_shell_quote` for one value;
    - call `safe_shell_quote_many` for 1..256 ordered values.
-3. Otherwise resolve the sibling `safe_shell.py` and use a CLI transport.
+   This persistent structured path is the fastest safe-shell route. Batch all
+   values for the same shell into one call.
+3. Otherwise resolve the sibling `safe_shell.py` and use the first available
+   no-disk CLI transport below.
 4. If none of these paths is available, stop instead of quoting manually.
+
+Never create a temporary request file or shared clipboard file merely to call
+safe-shell. File creation adds I/O, races, and residual data without fixing the
+original transport boundary.
 
 The `shell` enum must equal the parser that will consume the final command. It
 does not select or launch a shell. Select `pwsh` only for PowerShell 7.3+ when
@@ -77,7 +84,7 @@ sibling script is missing, stop and report both expected paths.
 
 Use CLI transports in this order:
 
-1. Native execution-tool stdin:
+1. Native stdin supplied in the process-start call:
 
    ```text
    python "SAFE_SHELL_SCRIPT" --request-stdin
@@ -86,24 +93,39 @@ Use CLI transports in this order:
    Send one UTF-8 JSON envelope through the execution tool's native stdin
    field.
 
-2. For a small request only, URL-safe UTF-8 Base64 for the entire envelope:
+2. For a small, non-sensitive request, URL-safe UTF-8 Base64 for the
+   entire envelope:
 
    ```text
    python "SAFE_SHELL_SCRIPT" --request-base64 B64
    ```
 
-   Base64 is subject to argv limits, especially the Windows process command
-   line. It cannot carry inputs near the service's 1 MiB data limit.
+   Prefer this one-process call when the compact envelope is at most 8 KiB and
+   obtaining a writable session would add another wait or tool round trip.
+   Base64 may appear in process listings or tool logs, expands the payload,
+   and remains subject to argv limits, especially on Windows. Never use it
+   for secrets or inputs near the service's 1 MiB data limit.
 
-3. An existing UTF-8 JSON request file:
+3. A writable stdin session for sensitive, larger, or argv-limited requests:
+
+   ```text
+   python "SAFE_SHELL_SCRIPT" --request-stdin-line
+   ```
+
+   Start a writable process session, then send exactly one compact JSON
+   envelope followed by LF. This mode reads one frame and exits without
+   waiting for EOF. Use it for execution tools that expose a later
+   `write_stdin` operation. Do not send pretty-printed multiline JSON.
+
+4. An already-existing UTF-8 JSON request file:
 
    ```text
    python "SAFE_SHELL_SCRIPT" @request.json
    ```
 
-Do not create a request file with shell redirection merely to invoke
-safe-shell. Do not put a PowerShell here-string or quoted dynamic payload in
-the command to simulate native stdin.
+Never create a temporary request file, fixed mailbox, or shared clipboard file
+merely to invoke safe-shell. Do not use shell redirection, a PowerShell
+here-string, or a quoted dynamic payload to simulate native stdin.
 
 The same CLI entry automatically dispatches single envelopes containing
 `text` and batch envelopes containing `texts`. Only single requests accept the
@@ -135,6 +157,9 @@ stdout is always one UTF-8 JSON line, independent of the console code page and
 - Do not bypass CMD rejection with manual escaping.
 - Do not bypass a `powershell` legacy-native rejection by adding quotes or
   backslashes. Use a raw argv API, or the actual `pwsh` 7.3+ parser.
+- Do not create or reuse a request scratch file when structured MCP, native
+  stdin, the small non-sensitive Base64 transport, or writable session stdin
+  is available.
 
 ## Decision Tree
 

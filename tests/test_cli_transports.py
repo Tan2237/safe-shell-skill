@@ -31,6 +31,32 @@ class TestCliTransports(unittest.TestCase):
         response = json.loads(completed.stdout.decode("utf-8"))
         self.assertEqual(response["quoted"], "'foo'\\''bar'")
 
+    def test_request_stdin_line_does_not_wait_for_eof(self):
+        payload = json.dumps(
+            {"shell": "bash", "text": "session input"},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        process = subprocess.Popen(
+            [sys.executable, str(SCRIPT), "--request-stdin-line"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        try:
+            process.stdin.write(payload + b"\n")
+            process.stdin.flush()
+            self.assertEqual(process.wait(timeout=5), 0)
+            response = json.loads(process.stdout.read().decode("utf-8"))
+            self.assertEqual(response["quoted"], "'session input'")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            process.stdin.close()
+
     def test_request_base64_accepts_urlsafe_unpadded_envelope(self):
         payload = json.dumps(
             {"shell": "powershell", "text": "a'b"},

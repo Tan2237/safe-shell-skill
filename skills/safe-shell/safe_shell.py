@@ -3,6 +3,7 @@
 
 Usage:
     safe-shell --request-stdin
+    safe-shell --request-stdin-line
     safe-shell --request-base64 BASE64
     safe-shell @request.json
 
@@ -485,7 +486,7 @@ def process_envelope(request_data: dict[str, Any]) -> dict[str, Any]:
 
 USAGE = (
     "Usage: safe-shell @request.json | --request-stdin | "
-    "--request-base64 BASE64"
+    "--request-stdin-line | --request-base64 BASE64"
 )
 
 
@@ -554,10 +555,28 @@ def parse_request_bytes(raw_bytes: bytes) -> dict[str, Any]:
     return request_data
 
 
+def _read_stdin_line() -> bytes:
+    """Read one bounded newline-framed request without waiting for EOF."""
+    raw_bytes = sys.stdin.buffer.readline(MAX_FILE_SIZE + 2)
+    if raw_bytes.endswith(b"\n"):
+        raw_bytes = raw_bytes[:-1]
+        if raw_bytes.endswith(b"\r"):
+            raw_bytes = raw_bytes[:-1]
+    if len(raw_bytes) > MAX_FILE_SIZE:
+        raise SafeShellError(
+            "INPUT_TOO_LARGE",
+            f"request payload exceeds maximum {MAX_FILE_SIZE} bytes",
+        )
+    return raw_bytes
+
+
 def read_request(args: list[str]) -> dict[str, Any] | None:
     """Read a request from stdin, Base64, or the legacy @file transport."""
     if args == ["--request-stdin"]:
         return parse_request_bytes(sys.stdin.buffer.read(MAX_FILE_SIZE + 1))
+
+    if args == ["--request-stdin-line"]:
+        return parse_request_bytes(_read_stdin_line())
 
     if len(args) == 2 and args[0] == "--request-base64":
         if len(args[1]) > MAX_FILE_SIZE * 2:

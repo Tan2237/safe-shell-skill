@@ -89,13 +89,19 @@ Codex 环境可以同时加载 skill 与常驻 MCP 服务。
 
 1. 执行 API 接受 argv 数组时，直接传原始数组元素。
 2. 必须生成 Shell 源码且 `safe_shell_quote` / `safe_shell_quote_many`
-   可调用时，使用结构化 MCP。
-3. 否则使用 CLI 的原生 stdin。
-4. 小请求且没有 stdin 时，可使用整个 JSON envelope 的 URL-safe Base64。
-5. 大请求没有 stdin 时，只能使用已经存在的 UTF-8 请求文件；不要用 Shell
-   重定向或动态 here-string 临时创建它。
+   可调用时，使用结构化 MCP；常驻进程避免重复启动 Python，也是最快路径。
+3. 执行工具在启动调用中提供 stdin 时，使用 `--request-stdin`。
+4. 没有首调用 stdin 时，小型、非敏感请求（建议 envelope 不超过 8 KiB）
+   使用整个 JSON envelope 的 URL-safe Base64，保持一次进程调用。
+5. 请求较大、敏感或不适合进入进程参数，且工具能在启动后写会话 stdin 时，
+   使用 `--request-stdin-line`；写入一行紧凑 JSON 和换行后进程立即返回，
+   不等待 EOF。
+6. 最后才读取已经存在的 UTF-8 请求文件。不要为了调用 safe-shell 创建临时
+   请求文件、固定“剪贴板”文件，或使用 Shell 重定向与动态 here-string。
 
-每个返回的 `quoted` 元素只能放到一个数据参数的位置，不要二次包引号。
+同一 Shell 的多个参数应合并为一次 `safe_shell_quote_many` 或批量 CLI 请求，
+以减少进程启动和协议往返。每个返回的 `quoted` 元素只能放到一个数据参数的
+位置，不要二次包引号。
 
 ## 结构化 MCP
 
@@ -166,31 +172,46 @@ python skills/safe-shell/safe_shell.py --request-stdin
 safe-shell --request-stdin
 ```
 
+如果执行工具没有首调用 stdin 字段、但能向已启动会话写入数据，使用单行
+模式：
+
+```bash
+safe-shell --request-stdin-line
+```
+
+向该会话写入一行紧凑 JSON，并以 `LF`（或 `CRLF`）结束。该模式只读取这一
+帧，不等待调用方关闭 stdin，适合大型或敏感请求，以及 Agent 的
+`start` + `write_stdin` 工具组合。若创建可写会话需要额外等待，小型非敏感
+请求优先使用下一节的 Base64 单次调用；多行美化 JSON 继续使用
+`--request-stdin`。
+
 批量 envelope 通过同一入口自动分派：
 
 ```json
 {"shell":"pwsh","texts":["one","two words","$env:HOME"]}
 ```
 
-### Base64 只适合小请求
+### Base64 适合小型非敏感请求
 
-没有原生 stdin 时，可对整个 UTF-8 JSON envelope 做无填充 URL-safe
-Base64：
+没有首调用 stdin 时，可对不超过 8 KiB 的小型非敏感 UTF-8 JSON envelope
+做无填充 URL-safe Base64，以一次进程调用换取更低延迟：
 
 ```bash
 safe-shell --request-base64 B64
 ```
 
-Base64 受操作系统 argv 限制。Windows 的进程命令行通常远小于本项目的
-1 MiB 数据上限，因此不要把 1 MiB / 4 MiB 服务上限理解成 Base64
-命令行可达上限。较大请求必须走原生 stdin 或已有文件：
+Base64 会出现在进程参数和可能的工具日志中，不用于敏感内容；它还受操作
+系统 argv 限制。Windows 的进程命令行通常远小于本项目的 1 MiB 数据上限，
+因此不要把 1 MiB / 4 MiB 服务上限理解成 Base64 命令行可达上限。较大或
+敏感请求应走原生 stdin、单行会话 stdin，最后才使用已有文件：
 
 ```bash
 safe-shell @request.json
 ```
 
-不要为了调用工具而用 Shell 重定向、PowerShell here-string 或含动态值的
-命令临时拼请求文件；那会把待解决的引用问题提前到调用之前。
+不要为了调用工具而创建临时请求文件、共享剪贴板文件，或使用 Shell
+重定向、PowerShell here-string 与含动态值的命令拼文件；那会引入磁盘 I/O、
+并发覆盖、残留数据，并把待解决的引用问题提前到调用之前。
 
 单条 CLI 请求还接受可选的 `encoding: "base64"`，仅编码 `text` 字段；
 标准与 URL-safe、有填充与无填充形式都接受。批量 `texts` 不支持该字段。
